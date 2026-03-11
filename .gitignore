@@ -1,0 +1,24 @@
+# Logs
+kinect.log
+
+# Commandes temporaires
+cmd.txt
+
+# Snapshots Kinect
+KinectSnap*.png
+KinectSnap*_view*.jpg
+
+# TTS temp
+tts_tmp.mp3
+tts_tmp.wav
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Binaire compilé (à compiler localement)
+KinectMotor.exe
+
+# Backups locaux
+backup/
