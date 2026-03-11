@@ -104,60 +104,57 @@ def calibrate(stream, duration=2.0):
     _log("Ambiant: " + f"{ambient:.1f}" + " -> seuil: " + f"{threshold:.1f}")
     return threshold
 
-def listen_loop(model, threshold):
+def listen_loop(model, threshold, stream):
+    """Boucle d ecoute. Prend le stream deja ouvert (partage avec calibrate)."""
     _log("Ecoute active — seuil RMS=" + f"{threshold:.1f}")
     recording    = False
     frames       = []
     silence_time = 0.0
     speech_time  = 0.0
-    with sd.InputStream(device=BIRD_DEVICE_ID, samplerate=SAMPLE_RATE,
-                        channels=CHANNELS, dtype="int16",
-                        blocksize=CHUNK_SAMPLES) as stream:
-        while True:
-            chunk, _ = stream.read(CHUNK_SAMPLES)
-            level = rms(chunk)
-            if level > threshold:
-                if not recording:
-                    _log("Voix detectee (RMS=" + f"{level:.0f}" + ")")
-                    recording = True
-                    frames = []
-                    speech_time = 0.0
-                    silence_time = 0.0
-                frames.append(chunk.copy())
-                speech_time += CHUNK_DURATION
+    while True:
+        chunk, _ = stream.read(CHUNK_SAMPLES)
+        level = rms(chunk)
+        if level > threshold:
+            if not recording:
+                _log("Voix detectee (RMS=" + f"{level:.0f}" + ")")
+                recording    = True
+                frames       = []
+                speech_time  = 0.0
                 silence_time = 0.0
-                if speech_time >= MAX_DURATION:
-                    _log("MAX_DURATION, transcription forcee")
-                    send_voice(transcribe(frames, model))
-                    recording = False
-                    frames = []
-                    speech_time = 0.0
+            frames.append(chunk.copy())
+            speech_time  += CHUNK_DURATION
+            silence_time  = 0.0
+            if speech_time >= MAX_DURATION:
+                _log("MAX_DURATION, transcription forcee")
+                send_voice(transcribe(frames, model))
+                recording    = False
+                frames       = []
+                speech_time  = 0.0
+                silence_time = 0.0
+        else:
+            if recording:
+                frames.append(chunk.copy())
+                silence_time += CHUNK_DURATION
+                if silence_time >= SILENCE_AFTER:
+                    if speech_time >= MIN_DURATION:
+                        _log("Fin utterance (" + f"{speech_time:.1f}" + "s)")
+                        send_voice(transcribe(frames, model))
+                    else:
+                        _log("Trop court (" + f"{speech_time:.2f}" + "s)")
+                    recording    = False
+                    frames       = []
                     silence_time = 0.0
-            else:
-                if recording:
-                    frames.append(chunk.copy())
-                    silence_time += CHUNK_DURATION
-                    if silence_time >= SILENCE_AFTER:
-                        if speech_time >= MIN_DURATION:
-                            _log("Fin utterance (" + f"{speech_time:.1f}" + "s)")
-                            send_voice(transcribe(frames, model))
-                        else:
-                            _log("Trop court (" + f"{speech_time:.2f}" + "s)")
-                        recording = False
-                        frames = []
-                        silence_time = 0.0
-                        speech_time = 0.0
+                    speech_time  = 0.0
 
 if __name__ == "__main__":
     _log("Chargement Whisper '" + MODEL_SIZE + "'...")
     model = whisper.load_model(MODEL_SIZE)
     _log("Modele pret.")
-    # FIX: calibration + ecoute dans le MEME stream (evite race condition)
     with sd.InputStream(device=BIRD_DEVICE_ID, samplerate=SAMPLE_RATE,
                         channels=CHANNELS, dtype="int16",
                         blocksize=CHUNK_SAMPLES) as stream:
         threshold = calibrate(stream)
         try:
-            listen_loop(model, threshold)
+            listen_loop(model, threshold, stream)
         except KeyboardInterrupt:
             _log("Arret KinectVoice.")
