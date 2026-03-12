@@ -15,9 +15,10 @@ CHUNK_DURATION = 0.1
 CHUNK_SAMPLES  = int(SAMPLE_RATE * CHUNK_DURATION)
 
 SILENCE_AFTER  = 1.0
-MIN_DURATION   = 1.0
+MIN_DURATION   = 0.8
 MAX_DURATION   = 8.0
-NOISE_FACTOR   = 5.0
+NOISE_FACTOR   = 3.5
+FIXED_THRESHOLD = 800   # seuil fixe si ambiant trop eleve (0 = auto)
 MODEL_SIZE     = "small"
 
 CMD_FILE        = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\cmd.txt"
@@ -74,8 +75,7 @@ def transcribe(frames, model):
         audio,
         language="fr",
         beam_size=5,
-        vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
+        vad_filter=False,
     )
     text = " ".join(seg.text for seg in segments).strip()
     return text
@@ -102,8 +102,13 @@ def calibrate(stream, duration=2.0):
     samples = int(duration / CHUNK_DURATION)
     levels  = [rms(stream.read(CHUNK_SAMPLES)[0]) for _ in range(samples)]
     ambient   = float(np.mean(levels))
-    threshold = max(ambient * NOISE_FACTOR, 50.0)
-    _log("Ambiant: " + f"{ambient:.1f}" + " -> seuil: " + f"{threshold:.1f}")
+    threshold = ambient * NOISE_FACTOR
+    if FIXED_THRESHOLD > 0:
+        threshold = FIXED_THRESHOLD
+        _log("Ambiant: " + f"{ambient:.1f}" + " -> seuil FIXE: " + f"{threshold:.1f}")
+    else:
+        threshold = max(threshold, 50.0)
+        _log("Ambiant: " + f"{ambient:.1f}" + " -> seuil auto: " + f"{threshold:.1f}")
     return threshold
 
 def listen_loop(model, threshold, stream):
