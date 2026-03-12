@@ -13,6 +13,7 @@ TTS_PY           = r"C:\Kinect\KinectTTS.py"
 CMD_FILE         = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\cmd.txt"
 LOG_FILE         = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\kinect.log"
 TTS_LOCK_FILE    = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\tts_speaking.lock"
+TRANSCRIPT_FILE  = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\transcript.txt"
 SLEEP_FILE       = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\claudius_sleep.lock"
 PYTHON           = r"C:\Python314\python.exe"
 PIPER_MODEL      = r"C:\Kinect\piper\fr_FR-upmc-medium.onnx"
@@ -195,6 +196,13 @@ def _handle_voice(text):
     t.join()
     reply = result_box[0]
     _log("VOICE reply: " + reply[:80])
+    # Transcript temps reel
+    try:
+        ts = time.strftime("%H:%M:%S")
+        with open(TRANSCRIPT_FILE, "a", encoding="utf-8") as _tf:
+            _tf.write(f"[{ts}] Claudius: {reply}\n")
+    except Exception:
+        pass
     gesture = _gesture_for(reply)
     if gesture:
         threading.Thread(target=_run, args=(gesture,), daemon=True).start()

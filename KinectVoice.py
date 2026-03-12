@@ -1,14 +1,12 @@
 """
 KinectVoice.py - Reconnaissance vocale pour Claudius
+faster-whisper (ctranslate2) - GPU float16 si dispo, sinon CPU int8
 Ecoute UNIQUEMENT le micro Bird (device 1).
-VAD avec calibration automatique + filtre hallucinations Whisper.
-Transcription Whisper base FR (fp16 si GPU dispo).
-Resultat -> cmd.txt : VOICE:texte
 """
 import sounddevice as sd
 import numpy as np
-import whisper
-import time, os, re, torch
+import time, os, re
+from faster_whisper import WhisperModel
 
 BIRD_DEVICE_ID = 1
 SAMPLE_RATE    = 16000
@@ -16,16 +14,17 @@ CHANNELS       = 1
 CHUNK_DURATION = 0.1
 CHUNK_SAMPLES  = int(SAMPLE_RATE * CHUNK_DURATION)
 
-SILENCE_AFTER  = 1.0    # secondes de silence pour clore une utterance
-MIN_DURATION   = 1.0    # duree minimale utterance (ignore bruits courts)
-MAX_DURATION   = 8.0    # duree maximale (evite accumulation longue)
-NOISE_FACTOR   = 5.0    # seuil = ambiant * NOISE_FACTOR (plus discriminant)
+SILENCE_AFTER  = 1.0
+MIN_DURATION   = 1.0
+MAX_DURATION   = 8.0
+NOISE_FACTOR   = 5.0
 MODEL_SIZE     = "small"
 
-CMD_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\cmd.txt"
-LOG_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\kinect.log"
-TTS_LOCK_FILE = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\tts_speaking.lock"
-SLEEP_FILE    = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\claudius_sleep.lock"
+CMD_FILE        = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\cmd.txt"
+LOG_FILE        = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\kinect.log"
+TRANSCRIPT_FILE = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\transcript.txt"
+TTS_LOCK_FILE   = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\tts_speaking.lock"
+SLEEP_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\claudius_sleep.lock"
 
 HALLUCINATION_PATTERNS = [
     r"^\s*[\.\s\u2026]+\s*$",
@@ -43,6 +42,16 @@ def _log(msg):
     except Exception:
         pass
 
+def _write_transcript(speaker, text):
+    """Ecrit dans transcript.txt pour affichage temps reel."""
+    try:
+        ts = time.strftime("%H:%M:%S")
+        line = f"[{ts}] {speaker}: {text}\n"
+        with open(TRANSCRIPT_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass
+
 def rms(chunk):
     return float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
 
@@ -54,24 +63,22 @@ def is_hallucination(text):
         return True
     if len(re.sub(r"[^\w]", "", text)) < 3:
         return True
-    # Minimum 2 mots reels (lettres uniquement)
     mots_reels = [m for m in re.findall(r"[a-zA-ZÀ-ÿ]{2,}", text)]
     if len(mots_reels) < 2:
         return True
     return False
 
-def transcribe(frames, model, use_fp16):
+def transcribe(frames, model):
     audio = np.concatenate(frames, axis=0).flatten().astype(np.float32) / 32768.0
-    result = model.transcribe(
+    segments, info = model.transcribe(
         audio,
         language="fr",
-        fp16=use_fp16,
-        temperature=0.0,
-        no_speech_threshold=0.4,
-        logprob_threshold=-0.5,
-        condition_on_previous_text=False
+        beam_size=5,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500),
     )
-    return result["text"].strip()
+    text = " ".join(seg.text for seg in segments).strip()
+    return text
 
 def send_voice(text):
     if not text or is_hallucination(text):
@@ -82,6 +89,7 @@ def send_voice(text):
         _log("Claudius parle — utterance ignoree: " + text[:40]); return
     if os.path.exists(CMD_FILE):
         _log("cmd.txt occupe, ignore"); return
+    _write_transcript("David", text)
     try:
         with open(CMD_FILE, "w", encoding="utf-8") as f:
             f.write("VOICE:" + text)
@@ -98,8 +106,8 @@ def calibrate(stream, duration=2.0):
     _log("Ambiant: " + f"{ambient:.1f}" + " -> seuil: " + f"{threshold:.1f}")
     return threshold
 
-def listen_loop(model, threshold, stream, use_fp16):
-    _log("Ecoute active — seuil RMS=" + f"{threshold:.1f}" + (" [fp16]" if use_fp16 else " [fp32]"))
+def listen_loop(model, threshold, stream):
+    _log("Ecoute active — seuil RMS=" + f"{threshold:.1f}")
     recording    = False
     frames       = []
     silence_time = 0.0
@@ -109,7 +117,6 @@ def listen_loop(model, threshold, stream, use_fp16):
         level     = rms(chunk)
         if level > threshold:
             if os.path.exists(TTS_LOCK_FILE):
-                # Claudius parle — reset silencieux
                 recording = False; frames = []; speech_time = 0.0; silence_time = 0.0
                 continue
             if not recording:
@@ -119,7 +126,10 @@ def listen_loop(model, threshold, stream, use_fp16):
             speech_time += CHUNK_DURATION; silence_time = 0.0
             if speech_time >= MAX_DURATION:
                 _log("MAX_DURATION, transcription forcee")
-                send_voice(transcribe(frames, model, use_fp16))
+                t0 = time.time()
+                txt = transcribe(frames, model)
+                _log(f"Transcrit en {time.time()-t0:.2f}s")
+                send_voice(txt)
                 recording = False; frames = []; speech_time = 0.0; silence_time = 0.0
         else:
             if recording:
@@ -128,21 +138,29 @@ def listen_loop(model, threshold, stream, use_fp16):
                 if silence_time >= SILENCE_AFTER:
                     if speech_time >= MIN_DURATION:
                         _log("Fin utterance (" + f"{speech_time:.1f}" + "s)")
-                        send_voice(transcribe(frames, model, use_fp16))
+                        t0 = time.time()
+                        txt = transcribe(frames, model)
+                        _log(f"Transcrit en {time.time()-t0:.2f}s")
+                        send_voice(txt)
                     else:
                         _log("Trop court (" + f"{speech_time:.2f}" + "s)")
                     recording = False; frames = []; silence_time = 0.0; speech_time = 0.0
 
 if __name__ == "__main__":
-    use_fp16 = torch.cuda.is_available()
-    _log("Chargement Whisper '" + MODEL_SIZE + "' (" + ("GPU fp16" if use_fp16 else "CPU fp32") + ")...")
-    model = whisper.load_model(MODEL_SIZE)
-    _log("Modele pret.")
+    import ctranslate2
+    gpus = ctranslate2.get_supported_compute_types("cuda")
+    if gpus and "float16" in gpus:
+        device, compute = "cuda", "float16"
+    else:
+        device, compute = "cpu", "int8"
+    _log(f"Chargement faster-whisper '{MODEL_SIZE}' ({device} {compute})...")
+    model = WhisperModel(MODEL_SIZE, device=device, compute_type=compute)
+    _log("Modele pret. [" + device.upper() + " " + compute + "]")
     with sd.InputStream(device=BIRD_DEVICE_ID, samplerate=SAMPLE_RATE,
                         channels=CHANNELS, dtype="int16",
                         blocksize=CHUNK_SAMPLES) as stream:
         threshold = calibrate(stream)
         try:
-            listen_loop(model, threshold, stream, use_fp16)
+            listen_loop(model, threshold, stream)
         except KeyboardInterrupt:
             _log("Arret KinectVoice.")
