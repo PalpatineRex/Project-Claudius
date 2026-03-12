@@ -17,10 +17,10 @@ CHUNK_DURATION = 0.1
 CHUNK_SAMPLES  = int(SAMPLE_RATE * CHUNK_DURATION)
 
 SILENCE_AFTER  = 1.2    # secondes de silence pour clore une utterance
-MIN_DURATION   = 0.8    # duree minimale utterance (evite les faux positifs courts)
+MIN_DURATION   = 0.5    # duree minimale utterance
 MAX_DURATION   = 15.0   # duree maximale
-NOISE_FACTOR   = 6.0    # seuil = ambiant * NOISE_FACTOR (plus haut = moins sensible au bruit de fond)
-MODEL_SIZE     = "base"
+NOISE_FACTOR   = 4.0    # seuil = ambiant * NOISE_FACTOR
+MODEL_SIZE     = "small"
 
 CMD_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\cmd.txt"
 LOG_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\kinect.log"
