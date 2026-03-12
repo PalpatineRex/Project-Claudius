@@ -17,9 +17,9 @@ CHUNK_DURATION = 0.1
 CHUNK_SAMPLES  = int(SAMPLE_RATE * CHUNK_DURATION)
 
 SILENCE_AFTER  = 1.0    # secondes de silence pour clore une utterance
-MIN_DURATION   = 0.5    # duree minimale utterance
+MIN_DURATION   = 1.0    # duree minimale utterance (ignore bruits courts)
 MAX_DURATION   = 8.0    # duree maximale (evite accumulation longue)
-NOISE_FACTOR   = 3.0    # seuil = ambiant * NOISE_FACTOR
+NOISE_FACTOR   = 5.0    # seuil = ambiant * NOISE_FACTOR (plus discriminant)
 MODEL_SIZE     = "small"
 
 CMD_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\cmd.txt"
@@ -54,6 +54,10 @@ def is_hallucination(text):
         return True
     if len(re.sub(r"[^\w]", "", text)) < 3:
         return True
+    # Minimum 2 mots reels (lettres uniquement)
+    mots_reels = [m for m in re.findall(r"[a-zA-ZÀ-ÿ]{2,}", text)]
+    if len(mots_reels) < 2:
+        return True
     return False
 
 def transcribe(frames, model, use_fp16):
@@ -63,8 +67,9 @@ def transcribe(frames, model, use_fp16):
         language="fr",
         fp16=use_fp16,
         temperature=0.0,
-        no_speech_threshold=0.6,
-        logprob_threshold=-1.0
+        no_speech_threshold=0.4,
+        logprob_threshold=-0.5,
+        condition_on_previous_text=False
     )
     return result["text"].strip()
 
