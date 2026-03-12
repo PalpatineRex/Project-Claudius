@@ -16,10 +16,10 @@ CHANNELS       = 1
 CHUNK_DURATION = 0.1
 CHUNK_SAMPLES  = int(SAMPLE_RATE * CHUNK_DURATION)
 
-SILENCE_AFTER  = 1.2    # secondes de silence pour clore une utterance
+SILENCE_AFTER  = 1.0    # secondes de silence pour clore une utterance
 MIN_DURATION   = 0.5    # duree minimale utterance
-MAX_DURATION   = 15.0   # duree maximale
-NOISE_FACTOR   = 4.0    # seuil = ambiant * NOISE_FACTOR
+MAX_DURATION   = 8.0    # duree maximale (evite accumulation longue)
+NOISE_FACTOR   = 3.0    # seuil = ambiant * NOISE_FACTOR
 MODEL_SIZE     = "small"
 
 CMD_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\cmd.txt"
@@ -103,6 +103,10 @@ def listen_loop(model, threshold, stream, use_fp16):
         chunk, _ = stream.read(CHUNK_SAMPLES)
         level     = rms(chunk)
         if level > threshold:
+            if os.path.exists(TTS_LOCK_FILE):
+                # Claudius parle — reset silencieux
+                recording = False; frames = []; speech_time = 0.0; silence_time = 0.0
+                continue
             if not recording:
                 _log("Voix detectee (RMS=" + f"{level:.0f}" + ")")
                 recording = True; frames = []; speech_time = 0.0; silence_time = 0.0
