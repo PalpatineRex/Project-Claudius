@@ -1,11 +1,10 @@
 """
 KinectVoice.py - Reconnaissance vocale pour Claudius
-faster-whisper (ctranslate2) - GPU float16, fallback CPU int8
-Micro Bird UM1 device 1. VAD maison + filtre hallucinations.
+faster-whisper GPU float16, fallback CPU int8
+Micro Bird UM1 device 1.
 """
 import sounddevice as sd
 import numpy as np
-import unicodedata
 import time, os, re, threading
 from faster_whisper import WhisperModel
 
@@ -15,10 +14,11 @@ CHANNELS        = 1
 CHUNK_DURATION  = 0.1
 CHUNK_SAMPLES   = int(SAMPLE_RATE * CHUNK_DURATION)
 
-SILENCE_AFTER   = 1.5   # silence pour clore une utterance
-MIN_DURATION    = 0.8   # duree min (ignore bruits courts)
-MAX_DURATION    = 8.0   # duree max avant transcription forcee
-FIXED_THRESHOLD = 0     # 0 = seuil auto (ambiant * facteur)
+SILENCE_AFTER   = 1.5
+MIN_DURATION    = 0.8
+MAX_DURATION    = 8.0
+FIXED_THRESHOLD = 0      # 0 = auto (ambiant x NOISE_FACTOR)
+NOISE_FACTOR    = 2.0
 MODEL_SIZE      = "small"
 
 CMD_FILE        = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\cmd.txt"
@@ -27,17 +27,21 @@ TRANSCRIPT_FILE = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\transcript.
 TTS_LOCK_FILE   = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\tts_speaking.lock"
 SLEEP_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\claudius_sleep.lock"
 
-# Patterns hallucinations — appliques sur texte normalise (sans accents, lowercase)
+# Patterns sur texte brut, re.IGNORECASE couvre les variantes
 HALLUCINATION_PATTERNS = [
-    r"^\s*[\.\s\u2026]+\s*$",
-    r"^[\s\W]+$",
-    r"^\s*$",
-    r".*(amara|wikimedia|creative.?commons|sous.?titr|transcription.?par|realises.?par|community).*",
-    r"^(merci|abonne|abonnez|regardez|likez).{0,60}$",
-    r".*(youtube|twitter|facebook|instagram|tiktok|twitch).*",
+    r"^\s*[\.\s\u2026]*\s*$",                          # vide / ponctuation
+    r"^[\s\W]+$",                                       # non-alphanumeric
+    r"amara",                                           # toute mention Amara
+    r"sous.?titr",                                      # sous-titres variantes
+    r"transcription.?par|realise.?par|community",       # credits YouTube
+    r"merci d.avoir regard|merci pour|n.oubliez pas",  # fins de video
+    r"(youtube|twitter|facebook|instagram|twitch)",     # reseaux sociaux
+    r"wikimedia|creative.?commons",
 ]
 
-_send_lock = threading.Lock()  # anti race-condition double envoi
+_send_lock     = threading.Lock()   # anti double-envoi
+_transcribing  = threading.Event()  # bloque la boucle pendant transcription
+
 
 def _log(msg):
     line = "[VOICE " + time.strftime("%H:%M:%S") + "] " + msg
@@ -55,39 +59,38 @@ def _write_transcript(speaker, text):
     except Exception:
         pass
 
-def _normalize(text):
-    """Supprime accents + lowercase pour comparaison robuste."""
-    return unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode("ascii").lower()
-
 def rms(chunk):
     return float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
 
 def is_hallucination(text):
-    norm = _normalize(text)
+    t = text.strip()
+    if not t:
+        return True
+    # Matcher directement sur le texte brut (insensible casse, ignore accents casses)
+    t_check = t.lower().replace("'", "'").replace("\u2019", "'")
     for pat in HALLUCINATION_PATTERNS:
-        if re.search(pat, norm, re.IGNORECASE):
+        if re.search(pat, t_check, re.IGNORECASE):
             return True
-    if text.count("...") >= 2 or text.count("…") >= 2:
+    if t.count("...") >= 2 or t.count("\u2026") >= 2:
         return True
-    if len(re.sub(r"[^\w]", "", text)) < 3:
+    if len(re.sub(r"[^\w]", "", t)) < 3:
         return True
-    # Minimum 2 vrais mots
-    if len(re.findall(r"[a-zA-ZÀ-ÿ]{2,}", text)) < 2:
+    if len(re.findall(r"[a-zA-Z\u00C0-\u024F]{2,}", t)) < 2:
         return True
     return False
 
 def transcribe(frames, model):
-    audio = np.concatenate(frames, axis=0).flatten().astype(np.float32) / 32768.0
+    audio = np.concatenate(frames).flatten().astype(np.float32) / 32768.0
     segments, _ = model.transcribe(audio, language="fr", beam_size=5, vad_filter=False)
-    return " ".join(seg.text for seg in segments).strip()
+    return " ".join(s.text for s in segments).strip()
 
 def send_voice(text):
-    if not text or is_hallucination(text):
-        _log("Hallucination filtree: " + repr(text[:50])); return
+    if is_hallucination(text):
+        _log("Hallucination: " + repr(text[:60])); return
     if os.path.exists(SLEEP_FILE):
         _log("Veille — ignore"); return
     if os.path.exists(TTS_LOCK_FILE):
-        _log("TTS actif — ignore: " + text[:40]); return
+        _log("TTS actif — ignore"); return
     with _send_lock:
         if os.path.exists(CMD_FILE):
             _log("cmd.txt occupe — ignore"); return
@@ -101,12 +104,22 @@ def send_voice(text):
 
 def calibrate(stream, duration=2.0):
     _log(f"Calibration {duration}s — silence svp...")
-    samples = int(duration / CHUNK_DURATION)
-    levels  = [rms(stream.read(CHUNK_SAMPLES)[0]) for _ in range(samples)]
+    levels = [rms(stream.read(CHUNK_SAMPLES)[0]) for _ in range(int(duration / CHUNK_DURATION))]
     ambient = float(np.mean(levels))
-    threshold = FIXED_THRESHOLD if FIXED_THRESHOLD > 0 else max(ambient * 2.0, 200.0)
+    threshold = FIXED_THRESHOLD if FIXED_THRESHOLD > 0 else max(ambient * NOISE_FACTOR, 200.0)
     _log(f"Ambiant: {ambient:.0f} -> seuil: {threshold:.0f}")
     return threshold
+
+def _do_transcribe(frames, model):
+    """Transcrit et envoie. Bloque _transcribing pendant l'operation."""
+    _transcribing.set()
+    try:
+        t0 = time.time()
+        txt = transcribe(frames, model)
+        _log(f"Transcrit en {time.time()-t0:.2f}s")
+        send_voice(txt)
+    finally:
+        _transcribing.clear()
 
 def listen_loop(model, threshold, stream):
     _log(f"Ecoute active — seuil RMS={threshold:.0f}")
@@ -114,11 +127,17 @@ def listen_loop(model, threshold, stream):
     frames    = []
     t_silence = 0.0
     t_speech  = 0.0
+
     while True:
+        # Pause si transcription en cours (evite triple-fin)
+        if _transcribing.is_set():
+            time.sleep(0.05)
+            continue
+
         chunk, _ = stream.read(CHUNK_SAMPLES)
         level    = rms(chunk)
+
         if level > threshold:
-            # Reset si TTS actif (evite auto-echo)
             if os.path.exists(TTS_LOCK_FILE):
                 if recording:
                     recording = False; frames = []; t_speech = 0.0; t_silence = 0.0
@@ -130,7 +149,7 @@ def listen_loop(model, threshold, stream):
             t_speech += CHUNK_DURATION; t_silence = 0.0
             if t_speech >= MAX_DURATION:
                 _log("MAX_DURATION, transcription forcee")
-                _do_transcribe(frames, model)
+                _do_transcribe(frames[:], model)
                 recording = False; frames = []; t_speech = 0.0; t_silence = 0.0
         else:
             if recording:
@@ -139,19 +158,12 @@ def listen_loop(model, threshold, stream):
                 if t_silence >= SILENCE_AFTER:
                     if t_speech >= MIN_DURATION:
                         _log(f"Fin utterance ({t_speech:.1f}s)")
-                        _do_transcribe(frames, model)
+                        _do_transcribe(frames[:], model)
                     else:
                         _log(f"Trop court ({t_speech:.2f}s)")
                     recording = False; frames = []; t_speech = 0.0; t_silence = 0.0
 
-def _do_transcribe(frames, model):
-    t0  = time.time()
-    txt = transcribe(frames, model)
-    _log(f"Transcrit en {time.time()-t0:.2f}s")
-    send_voice(txt)
-
 if __name__ == "__main__":
-    # DLLs CUDA dans PATH pour ctranslate2
     for p in [r"C:\Python314\Lib\site-packages\nvidia\cublas\bin",
               r"C:\Python314\Lib\site-packages\nvidia\cudnn\bin"]:
         os.environ["PATH"] = p + ";" + os.environ.get("PATH", "")
