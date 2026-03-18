@@ -248,7 +248,8 @@ def _handle_voice(text):
             _log("ERR _query: " + str(e))
     t = threading.Thread(target=_query, daemon=True)
     t.start()
-    _run("think")
+    # Think en parallele (non bloquant pour le thread principal)
+    threading.Thread(target=_run, args=("think",), daemon=True).start()
     t.join(timeout=20)
     reply = result_box[0] or "Desole, je suis hors ligne."
     _log("VOICE reply: " + reply[:80])
