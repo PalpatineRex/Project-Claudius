@@ -14,7 +14,7 @@ CHANNELS       = 1
 CHUNK_DURATION = 0.1
 CHUNK_SAMPLES  = int(SAMPLE_RATE * CHUNK_DURATION)
 
-SILENCE_AFTER  = 1.0
+SILENCE_AFTER  = 1.5
 MIN_DURATION   = 0.8
 MAX_DURATION   = 8.0
 NOISE_FACTOR   = 3.5
@@ -30,9 +30,9 @@ SLEEP_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\claudius_sl
 HALLUCINATION_PATTERNS = [
     r"^\s*[\.\s\u2026]+\s*$",
     r"^[\s\W]+$",
-    r"^(merci|sous-titres|sous titres|transcription|abonne|amara|traduction|sous-titre).{0,60}$",
     r"^\s*$",
-    r".*(amara\.org|sous-titr|wikimedia|creative commons).*",
+    r"^.*(amara\.org|wikimedia|creative commons|sous-titr|transcription par|réalisés par).*$",
+    r"^(merci|abonne|abonnez).{0,60}$",
 ]
 
 def _log(msg):

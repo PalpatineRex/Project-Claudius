@@ -139,6 +139,7 @@ def _tts_wait(text):
                             creationflags=subprocess.CREATE_NO_WINDOW)
     finally:
         _speaking.clear()
+        time.sleep(0.5)  # marge post-TTS pour eviter auto-echo
         try: os.remove(TTS_LOCK_FILE)
         except: pass
 
