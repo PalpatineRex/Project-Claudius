@@ -30,6 +30,22 @@ try:
 except Exception:
     ANTHROPIC_API_KEY = ""
 ANTHROPIC_MODEL   = "claude-haiku-4-5-20251001"
+BRIDGE_PID_FILE   = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\bridge.pid"
+
+# --- Singleton Bridge ---
+def _enforce_singleton():
+    my_pid = os.getpid()
+    if os.path.exists(BRIDGE_PID_FILE):
+        try:
+            old_pid = int(open(BRIDGE_PID_FILE).read().strip())
+            if old_pid != my_pid:
+                import signal
+                os.kill(old_pid, signal.SIGTERM)
+                time.sleep(0.5)
+        except (ValueError, OSError, ProcessLookupError):
+            pass
+    with open(BRIDGE_PID_FILE, "w") as f:
+        f.write(str(my_pid))
 
 # Nettoyage fichiers residuels au boot
 for _f in (SLEEP_FILE, TTS_LOCK_FILE, CMD_FILE):
@@ -305,6 +321,7 @@ def watch_cmd():
 # --- Entrypoint ---
 
 if __name__ == "__main__":
+    _enforce_singleton()
     _log("=== KinectBridge demarrage (Claude Haiku) ===")
     threading.Thread(target=watch_cmd, daemon=True).start()
     threading.Thread(target=_auto_blink, daemon=True).start()
