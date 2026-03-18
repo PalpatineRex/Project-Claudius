@@ -18,7 +18,7 @@ SILENCE_AFTER  = 1.0
 MIN_DURATION   = 0.8
 MAX_DURATION   = 8.0
 NOISE_FACTOR   = 3.5
-FIXED_THRESHOLD = 800   # seuil fixe si ambiant trop eleve (0 = auto)
+FIXED_THRESHOLD = 350   # seuil fixe calibre sur RMS voix David (~400-550)
 MODEL_SIZE     = "small"
 
 CMD_FILE        = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\cmd.txt"
@@ -152,15 +152,25 @@ def listen_loop(model, threshold, stream):
                     recording = False; frames = []; silence_time = 0.0; speech_time = 0.0
 
 if __name__ == "__main__":
-    import ctranslate2
-    gpus = ctranslate2.get_supported_compute_types("cuda")
-    if gpus and "float16" in gpus:
+    # Ajouter DLLs CUDA nvidia au PATH pour ctranslate2
+    import sys
+    _cuda_paths = [
+        r"C:\Python314\Lib\site-packages\nvidia\cublas\bin",
+        r"C:\Python314\Lib\site-packages\nvidia\cudnn\bin",
+        r"C:\Python314\Lib\site-packages\nvidia\cuda_runtime\bin",
+    ]
+    os.environ["PATH"] = ";".join(_cuda_paths) + ";" + os.environ.get("PATH", "")
+
+    # Tenter GPU, fallback CPU
+    try:
+        import ctranslate2
+        ctranslate2.get_supported_compute_types("cuda")  # probe
         device, compute = "cuda", "float16"
-    else:
+    except Exception:
         device, compute = "cpu", "int8"
     _log(f"Chargement faster-whisper '{MODEL_SIZE}' ({device} {compute})...")
     model = WhisperModel(MODEL_SIZE, device=device, compute_type=compute)
-    _log("Modele pret. [" + device.upper() + " " + compute + "]")
+    _log(f"Modele pret. [{device.upper()} {compute}]")
     with sd.InputStream(device=BIRD_DEVICE_ID, samplerate=SAMPLE_RATE,
                         channels=CHANNELS, dtype="int16",
                         blocksize=CHUNK_SAMPLES) as stream:
