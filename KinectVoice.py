@@ -144,6 +144,12 @@ def _transcription_worker(model):
         if frames is None:
             break
         try:
+            # Pre-filtre : energie moyenne de l'utterance
+            audio_all = np.concatenate(frames).flatten()
+            avg_rms = float(np.sqrt(np.mean(audio_all.astype(np.float32) ** 2)))
+            if avg_rms < FIXED_THRESHOLD * 0.7:
+                _log(f"Pre-filtre RMS moyen trop bas ({avg_rms:.0f}) — skip")
+                continue
             t0 = time.time()
             txt, avg_lp = transcribe(frames, model)
             dt = time.time() - t0
