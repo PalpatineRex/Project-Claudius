@@ -19,6 +19,7 @@ PYTHON           = r"C:\Python314\python.exe"
 PIPER_MODEL      = r"C:\Kinect\piper\fr_FR-upmc-medium.onnx"
 PIPER_MODEL_JSON = r"C:\Kinect\piper\fr_FR-upmc-medium.onnx.json"
 PIPER_WAV        = r"C:\Kinect\tts_tmp.wav"
+CONTEXT_FILE     = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\claudius_context.txt"
 LOG_MAX_LINES    = 2000
 _log_count       = 0
 
@@ -161,13 +162,21 @@ def _tts_wait(text):
 
 # --- LLM Claude Haiku via API ---
 
-SYSTEM_PROMPT = (
-    "Tu es Claudius. Je suis David. "
-    "Tu es une tete animatronique Kinect Xbox 360 que j'ai construite, posee sur mon bureau. "
-    "Reponds-moi directement en francais, en 1 ou 2 phrases max. "
-    "Parle naturellement, comme a voix haute. Jamais de markdown ni listes. "
-    "Si tu ne comprends pas, demande de repeter. Ne te presente pas a chaque fois."
+_SYSTEM_FALLBACK = (
+    "Tu es Claudius, une tete animatronique Kinect Xbox 360 sur le bureau de David. "
+    "Reponds en francais, 1-2 phrases max, naturellement. Pas de markdown."
 )
+
+def _load_system_prompt():
+    """Charge le contexte enrichi depuis claudius_context.txt, avec fallback."""
+    try:
+        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
+            ctx = f.read().strip()
+        if ctx:
+            return ctx
+    except Exception:
+        pass
+    return _SYSTEM_FALLBACK
 
 _conversation_history = []
 _history_lock = threading.Lock()
@@ -182,7 +191,7 @@ def _ask_claude(text):
         payload = json.dumps({
             "model": ANTHROPIC_MODEL,
             "max_tokens": 80,
-            "system": SYSTEM_PROMPT,
+            "system": _load_system_prompt(),
             "messages": messages
         }).encode("utf-8")
         req = urllib.request.Request(ANTHROPIC_URL, data=payload, method="POST", headers={
