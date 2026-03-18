@@ -1,46 +1,45 @@
 # 🤖 Project Claudius
 
-> *Une tête animatronique Kinect Xbox 360 pilotée par IA locale — sans cloud, sans abonnement.*
+**Tête animatronique Kinect Xbox 360 pilotée par IA — 100% local, zéro cloud (sauf LLM).**
 
-Conçu et construit par **David**, développé en collaboration avec **Claude (Anthropic)**.  
-Claudius écoute, réfléchit, parle et bouge — entièrement en local sur une RTX 3060.
+Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond à voix haute et bouge la tête. Construit à partir d'un Kinect Xbox 360 v1, piloté par Python et C#, avec reconnaissance vocale (Whisper), intelligence (Claude Haiku API) et synthèse vocale (Piper TTS).
 
-![Status](https://img.shields.io/badge/status-v1%20live-brightgreen)
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
-![Python](https://img.shields.io/badge/python-3.14-blue)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+> *"Alors mon Claudius, c'est quoi mon projet de jeu vidéo déjà ?"*
+> *"From The Deep, un platformer style Ghouls'n Ghosts avec du WW2 et du cosmic horror."*
 
 ---
 
-## 📸 Ce que c'est
+## 🎯 Fonctionnalités
 
-Claudius est une **tête Kinect Xbox 360** posée sur un écran, transformée en agent conversationnel physique :
-
-- 🎙️ Il **entend** via un micro USB (Bird UM1) avec détection d'activité vocale
-- 🧠 Il **comprend** grâce à Whisper (transcription FR locale)
-- 💬 Il **réfléchit** avec Ollama + llama3.2:3b (LLM local, ~3.5s chaud)
-- 🗣️ Il **parle** avec Piper TTS voix Jessica (fr_FR-upmc-medium, ~1.2s)
-- 👀 Il **réagit** physiquement : blink automatique, acquiescement, négation, salutation
-
-Zéro cloud. Zéro abonnement. Tout tourne sur la machine.
+- **Reconnaissance vocale** — Whisper (faster-whisper) GPU CUDA, transcription en ~0.5s
+- **Intelligence conversationnelle** — Claude Haiku API avec mémoire contextuelle (6 échanges) et contexte enrichi dynamique
+- **Synthèse vocale** — Piper TTS voix Jessica (fr_FR-upmc-medium), GPU ONNX, ~0.3-0.7s
+- **Gestes physiques** — Moteur tilt Kinect : oui, non, blink, hello, think, reset
+- **Auto-blink** — Clignement naturel toutes les 4-8s quand inactif
+- **Anti-hallucination** — Triple filtre : keywords, logprob, pré-filtre RMS
+- **Mode veille** — sleep/wake via commande
+- **Transcript live** — Interface web temps réel sur `localhost:5005`
+- **Contexte enrichi** — Fichier `claudius_context.txt` rechargé dynamiquement à chaque message
+- **Démarrage automatique** — Se lance au boot Windows via .bat dans Startup
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        CLAUDIUS v1                          │
-├──────────────┬──────────────┬──────────────┬────────────────┤
-│ KinectVoice  │ KinectBridge │  KinectTTS   │  KinectMotor   │
-│  (Oreilles)  │  (Cerveau)   │   (Bouche)   │    (Corps)     │
-├──────────────┼──────────────┼──────────────┼────────────────┤
-│ VAD RMS      │ cmd.txt poll │ Piper Jessica│ C# / SDK 1.8   │
-│ Whisper base │ Ollama local │ pyttsx3 FR   │ Moteur tilt    │
-│ Bird UM1     │ Auto-blink   │ edge-tts NG  │ Motor lock     │
-└──────────────┴──────────────┴──────────────┴────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                      CLAUDIUS v2                             │
+├───────────────┬──────────────┬──────────────┬────────────────┤
+│  KinectVoice  │ KinectBridge │   Piper TTS  │  KinectMotor   │
+│  (Oreilles)   │  (Cerveau)   │   (Bouche)   │    (Corps)     │
+├───────────────┼──────────────┼──────────────┼────────────────┤
+│ faster-whisper │ Claude Haiku │ Piper Jessica│ C# / SDK 1.8   │
+│ small CUDA    │ API Anthropic│ GPU ONNX     │ Moteur tilt    │
+│ Bird UM1 mic  │ Contexte .txt│ winsound WAV │ Motor lock     │
+│ VAD RMS 800   │ 6 échanges   │ Fallback     │ Gestes auto    │
+│ Triple filtre │ Mémoire conv.│ pyttsx3 local│                │
+└───────────────┴──────────────┴──────────────┴────────────────┘
 ```
-
 
 ### Pipeline voix complet
 
@@ -48,26 +47,28 @@ Zéro cloud. Zéro abonnement. Tout tourne sur la machine.
 Micro Bird UM1
     │
     ▼
-KinectVoice.py
-    ├─ Calibration RMS ambiant au boot (2s)
-    ├─ VAD RMS temps réel (seuil × 4.0)
-    ├─ Whisper base FR (GPU/CPU)
-    ├─ Filtre hallucinations ("... ... ...", ponctuation seule)
-    └─ Écrit : VOICE:texte → cmd.txt
+KinectVoice.py (singleton, PID lock)
+    ├─ Seuil RMS fixe = 800 (ambiant ~300-500)
+    ├─ Queue unique (1 worker, anti-flood cooldown 2s)
+    ├─ Pré-filtre RMS moyen (skip si < seuil × 0.7)
+    ├─ faster-whisper small FR (CUDA float16, ~0.5s)
+    ├─ Filtre logprob < -0.7 → rejet
+    ├─ Filtre keywords hallucination (amara, sous-titres, etc.)
+    └─ Écrit VOICE:texte → cmd.txt
                 │
                 ▼
-         KinectBridge.py
+         KinectBridge.py (singleton, PID lock)
                 ├─ think (geste Kinect immédiat)
-                ├─ Ollama llama3.2:3b local (~3.5s chaud)
+                ├─ Claude Haiku API (~1-2s, contexte enrichi)
                 ├─ Geste selon réponse [thread parallèle]
                 │     oui / non / hello / think
-                └─ KinectTTS.py (Piper Jessica ~1.2s)
+                └─ Piper Jessica TTS (~0.3-0.7s GPU)
                               │
                               ▼
-                        Haut-parleurs
+                        Haut-parleurs (winsound)
 ```
 
-**Latence totale** : ~6s de fin de parole à début de réponse TTS.
+**Latence totale** : ~3-4s de fin de parole à début de réponse TTS.
 
 ---
 
@@ -75,15 +76,18 @@ KinectVoice.py
 
 ```
 Project-Claudius/
-├── KinectBridge.py      — Cerveau : watcher cmd.txt, Ollama, auto-blink, Piper TTS
-├── KinectVoice.py       — Oreilles : VAD RMS + Whisper base FR
-├── KinectTTS.py         — Bouche : Piper Jessica / pyttsx3 / edge-tts Neural
-├── KinectMotor.cs       — Corps : C# SDK Kinect, moteur tilt + snap RGB
+├── KinectBridge.py      — Cerveau : watcher cmd.txt, API Haiku, auto-blink, Piper TTS
+├── KinectVoice.py       — Oreilles : VAD RMS + faster-whisper CUDA + triple filtre
+├── KinectTTS.py         — Bouche standalone : Piper / pyttsx3 / edge-tts (fallback)
+├── KinectMotor.cs       — Corps : C# SDK Kinect 1.8, moteur tilt + snap RGB
+├── KinectTranscript.py  — Serveur Flask transcript temps réel (localhost:5005)
+├── KinectBridge.bat     — Script de démarrage (Bridge + Voice + Transcript)
+├── claudius_context.txt — Contexte enrichi pour Haiku (projets, préférences, etc.)
 ├── README.md
 └── .gitignore
 ```
 
-> **Note :** `KinectMotor.exe` (compilé) et `C:\Kinect\piper\` (modèles TTS ~75MB) ne sont **pas** dans le repo — voir installation.
+> **Non versionné** : `KinectMotor.exe` (compilé localement), `C:\Kinect\piper\` (modèles ~75MB), `api_key.txt`, logs, PID files.
 
 ---
 
@@ -91,22 +95,21 @@ Project-Claudius/
 
 | Composant | Détail |
 |-----------|--------|
-| OS | Windows 10/11 x64 |
-| Kinect | Xbox 360 v1 (Kinect for Windows SDK 1.8) |
-| Python | 3.x (testé : 3.14) |
-| GPU | Recommandé RTX (Ollama GPU + onnxruntime-gpu) |
-| Micro | USB (testé : Bird UM1, device index 1) |
-| Ollama | [ollama.ai](https://ollama.ai) avec `llama3.2:3b` |
+| **OS** | Windows 10/11 x64 |
+| **Kinect** | Xbox 360 v1 + [Kinect for Windows SDK 1.8](https://www.microsoft.com/en-us/download/details.aspx?id=44561) |
+| **Python** | 3.10+ (testé : 3.14) |
+| **GPU** | NVIDIA RTX recommandé (CUDA pour Whisper + Piper ONNX) |
+| **Micro** | USB externe recommandé (testé : Bird UM1, device index 1) |
+| **API** | Clé API Anthropic ([console.anthropic.com](https://console.anthropic.com)) |
 
 ### Dépendances Python
 
 ```bash
-pip install openai-whisper sounddevice numpy edge-tts pyttsx3 piper-tts onnxruntime-gpu
+pip install faster-whisper sounddevice numpy piper-tts onnxruntime-gpu pyttsx3 edge-tts flask
+pip install nvidia-cublas-cu12 nvidia-cudnn-cu12    # DLLs CUDA pour faster-whisper GPU
 ```
 
-> `onnxruntime-gpu` accélère Piper TTS (1.2s/synth vs 7s CPU).  
-> Si pas de GPU NVIDIA, utiliser `onnxruntime` standard.
-
+> Sans GPU NVIDIA : remplacer `onnxruntime-gpu` par `onnxruntime` et `faster-whisper` utilisera le CPU (plus lent, ~5s vs ~0.5s).
 
 ---
 
@@ -119,20 +122,22 @@ git clone https://github.com/PalpatineRex/Project-Claudius.git
 cd Project-Claudius
 ```
 
-### 2. Installer Ollama + modèle LLM
+### 2. Configurer la clé API
 
-```bash
-# Installer Ollama : https://ollama.ai
-ollama pull llama3.2:3b
+Créer le fichier `C:\Kinect\api_key.txt` contenant uniquement votre clé API Anthropic :
+
 ```
+sk-ant-api03-xxxxxxxxxxxx
+```
+
+> La clé n'est jamais commitée (dans `.gitignore`). Coût estimé : ~1-2€/mois avec Haiku.
 
 ### 3. Télécharger la voix Piper Jessica
 
-```python
-# Créer C:\Kinect\piper\ puis télécharger :
-# https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/fr/fr_FR/upmc/medium/fr_FR-upmc-medium.onnx
-# https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/fr/fr_FR/upmc/medium/fr_FR-upmc-medium.onnx.json
-```
+Créer `C:\Kinect\piper\` et télécharger :
+
+- [fr_FR-upmc-medium.onnx](https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/fr/fr_FR/upmc/medium/fr_FR-upmc-medium.onnx)
+- [fr_FR-upmc-medium.onnx.json](https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/fr/fr_FR/upmc/medium/fr_FR-upmc-medium.onnx.json)
 
 ### 4. Compiler KinectMotor.exe
 
@@ -144,14 +149,18 @@ csc.exe /platform:x86 /r:Microsoft.Kinect.dll /r:System.Drawing.dll KinectMotor.
 
 Copier le binaire dans `C:\Kinect\KinectMotor.exe`.
 
-### 5. Déployer les scripts Python
+### 5. Déployer
 
 ```
 C:\Kinect\
 ├── KinectBridge.py
 ├── KinectVoice.py
 ├── KinectTTS.py
+├── KinectTranscript.py
 ├── KinectMotor.exe
+├── KinectBridge.bat
+├── api_key.txt
+├── claudius_context.txt
 └── piper\
     ├── fr_FR-upmc-medium.onnx
     └── fr_FR-upmc-medium.onnx.json
@@ -159,222 +168,172 @@ C:\Kinect\
 
 ### 6. Démarrage automatique Windows
 
-Créer `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\KinectBridge.bat` :
+Copier `KinectBridge.bat` dans :
 
-```bat
-@echo off
-start "" /MIN "C:\Python314\pythonw.exe" "C:\Kinect\KinectBridge.py"
-timeout /t 3 /nobreak >nul
-start "" /MIN "C:\Python314\pythonw.exe" "C:\Kinect\KinectVoice.py"
+```
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\
 ```
 
-Claudius démarrera automatiquement à chaque boot Windows.
+Claudius démarrera automatiquement à chaque boot. Le `.bat` lance dans l'ordre :
+1. `KinectBridge.py` — cerveau + TTS (attend Piper ~4-6s)
+2. `KinectVoice.py` — reconnaissance vocale (charge Whisper ~2s)
+3. `KinectTranscript.py` — serveur web transcript
+
+### 7. Configuration du micro
+
+Dans `KinectVoice.py`, ajuster `BIRD_DEVICE_ID` à l'index de votre micro USB :
+
+```python
+BIRD_DEVICE_ID = 1   # 0 = micro par défaut, 1 = premier USB externe
+```
+
+Pour lister les devices disponibles :
+
+```python
+import sounddevice as sd; print(sd.query_devices())
+```
 
 ---
 
-## 🎮 Commandes manuelles
+## 🎙️ Commandes
 
-Écrire dans `cmd.txt` (workbench) pour déclencher une action immédiate :
+Claudius écoute en permanence via le micro. Il répond vocalement et avec des gestes.
+
+### Commandes texte (via cmd.txt)
 
 | Commande | Effet |
 |----------|-------|
-| `blink` | Cligne des yeux (blink moteur) |
-| `oui` | Acquiescement vertical |
-| `non` | Négation horizontale |
-| `hello` | Salutation |
-| `think` | Réflexion (mouvement pensif) |
-| `reset` | Recentrage à 0° |
-| `snap` | Photo RGB → `KinectSnap-DATE.png` |
-| `VOICE:texte` | Injection directe dans le pipeline voix (sans micro) |
-
+| `oui` | Hochement de tête vertical |
+| `non` | Mouvement négatif |
+| `blink` | Clignement |
+| `hello` | Salut (deux inclinaisons) |
+| `think` | Réflexion (bascule lente) |
+| `reset` | Position neutre |
+| `snap` | Capture photo RGB |
+| `sleep` | Mode veille (arrête écoute + blink) |
+| `wake` | Réveil |
+| `VOICE:texte` | Envoie du texte au LLM comme si dit à voix haute |
 
 ---
 
-## 🔧 Configuration
+## 🧠 Contexte enrichi
 
-### KinectBridge.py
+Le fichier `claudius_context.txt` est injecté comme system prompt à chaque appel API. Il contient les projets en cours, les préférences, et les instructions de personnalité de Claudius.
 
-```python
-OLLAMA_MDL       = "llama3.2:3b"          # Modèle LLM local
-PIPER_MODEL      = r"C:\Kinect\piper\..."  # Voix Jessica
+**Rechargement dynamique** : le fichier est relu à chaque message. Si vous le modifiez pendant que Claudius tourne, le prochain échange utilisera le nouveau contexte sans redémarrage.
+
+Exemple de contenu :
+
 ```
+## Projets en cours
+### Project Claudius (ce projet)
+Tête animatronique Kinect Xbox 360 pilotée par IA.
+Statut: voix v2 fonctionnelle, CUDA GPU OK.
 
-Pour changer de voix TTS : modifier `_tts_wait(reply)` → `_tts_wait(reply, neural=True)` (Henri Neural, nécessite internet).
+### From The Deep (jeu vidéo)
+Platformer Ghouls'n Ghosts, thème WW2 + Cosmic Horror, Godot 4.6.
 
-### KinectVoice.py
-
-```python
-BIRD_DEVICE_ID = 1      # Index sounddevice du micro
-NOISE_FACTOR   = 4.0    # Multiplicateur seuil VAD (augmenter si bruit)
-SILENCE_AFTER  = 1.2    # Délai silence fin utterance (secondes)
-MODEL_SIZE     = "base" # Modèle Whisper : tiny/base/small/medium
-```
-
-### KinectTTS.py
-
-```python
-VOICE_INDEX = 0  # pyttsx3 fallback : 0=Hortense FR, 1=Zira EN, 2=David EN
-```
-
----
-
-## 📊 Performances mesurées
-
-| Composant | Latence | Matériel |
-|-----------|---------|----------|
-| VAD + Whisper base | ~1.5s | RTX 3060 |
-| Ollama llama3.2:3b (chaud) | ~3.5s | RTX 3060 |
-| Ollama llama3.2:3b (froid) | ~14s | RTX 3060 |
-| Piper Jessica (chaud, onnxruntime-gpu) | ~1.2s | RTX 3060 |
-| Piper Jessica (froid, chargement) | ~15s | RTX 3060 |
-| **Total parole → TTS** | **~6s** | RTX 3060 |
-
-> Warm-up automatique au boot : Ollama + Piper chargés en parallèle, prêts en ~15s.
-
----
-
-## 🗺️ Roadmap — What's coming
-
-### ✅ Chapitre 0 — Corps & Présence
-- Moteur Kinect tilt (haut/bas/gauche/droite)
-- Auto-blink aléatoire (4–8s)
-- Gestes : oui, non, hello, think, reset
-- Snap RGB avec timeout et retry
-- Démarrage automatique Windows (Startup)
-- Canal cmd.txt pour injection de commandes
-
-### ✅ Chapitre 1 — Voix & Intelligence
-- Reconnaissance vocale Whisper base FR (offline)
-- VAD RMS avec calibration automatique au boot
-- Filtre anti-hallucinations Whisper
-- LLM local Ollama llama3.2:3b (~3.5s chaud)
-- TTS Piper Jessica fr_FR (~1.2s, offline)
-- Warm-up Ollama + Piper au démarrage
-- Geste automatique selon le contenu de la réponse
-
-### 🔲 Chapitre 2 — Mémoire conversationnelle
-- Historique des 5 derniers échanges dans le contexte Ollama
-- Personnalité persistante (Claudius se souvient de la conversation)
-- Résumé automatique si contexte trop long
-
-### 🔲 Chapitre 3 — États de présence
-- Skeleton tracking Kinect : détecter si quelqu'un est devant
-- États : `AWAY` / `PRESENT` / `FOCUS`
-- Blink plus lent en mode AWAY, regard vers l'utilisateur en FOCUS
-- Salutation automatique à l'approche
-
-### 🔲 Chapitre 4 — Gestes utilisateur
-- Détection WAVE (salutation entrante)
-- Bras levé = signal d'attention
-- Réactions motrices aux gestes détectés
-
-### 🔲 Chapitre 5 — Vision ponctuelle
-- `snap` → LLM Vision (LLaVA ou autre via Ollama)
-- Claudius décrit ce qu'il voit ("Je vois un homme assis devant un écran...")
-- Déclenchable par commande vocale ("qu'est-ce que tu vois ?")
-
-### 🔲 Chapitre 6 — Corps physique
-- Bras articulés imprimés en résine (Elegoo Mars)
-- Servos pilotés par Arduino ou second canal Kinect
-- Gestes bras synchronisés avec la parole
-
-### 💡 Futures idées
-- Voix custom entraînée sur un acteur FR (Coqui TTS / RVC)
-- Interface web locale pour logs et contrôle réseau
-- Mémoire long-terme (résumé de journée → fichier texte lu au boot)
-- Détection d'émotions via audio (ton de voix)
-- Intégration domotique (MQTT / Home Assistant)
-
-
----
-
-## 🐛 Dépannage
-
-### Whisper hallucine ("Merci d'avoir regardé", "... ... ...")
-→ Filtre intégré dans `KinectVoice.py`. Augmenter `NOISE_FACTOR` si l'ambiant est bruyant.
-
-### Piper trop lent au démarrage (~15s)
-→ Normal, chargement du modèle ONNX. Ensuite ~1.2s/synth. Ne pas tuer le process.
-
-### Ollama ne répond pas
-→ Vérifier qu'Ollama tourne : `ollama list`. Relancer : `ollama serve`.
-
-### Kinect non détecté
-→ Vérifier SDK 1.8 installé. Brancher **avant** le démarrage de `KinectMotor.exe`.
-
-### Micro non reconnu
-→ Lister les devices : `python -c "import sounddevice; print(sounddevice.query_devices())"`.  
-   Mettre à jour `BIRD_DEVICE_ID` dans `KinectVoice.py`.
-
-### Tuer les process Python (avant redéploiement)
-```cmd
-taskkill /F /IM pythonw.exe
+## Préférences de David
+- Réponses courtes, 1-2 phrases max
+- Français uniquement
+- Pas de markdown
 ```
 
 ---
 
-## 📝 Logs
+## 🛡️ Anti-hallucination (triple filtre)
 
-Tous les événements sont loggés dans `kinect.log` (workbench) :
+Whisper hallucine fréquemment sur du bruit ambiant (répète "Sous-titres réalisés par Amara.org", "Merci d'avoir regardé", etc.). Claudius utilise 3 couches de filtrage :
 
-```
-[21:17:45] KinectBridge démarrage...
-[21:17:57] Chargement Piper Jessica...
-[21:18:12] Piper prêt en 14.9s
-[21:18:12] Ollama prêt: Bonjour ! Comment puis-je vous aider ?
-[VOICE 21:18:18] Écoute active — seuil RMS=180.9
-[21:20:31] VOICE reçu: Claudius, présente-toi
-[21:20:38] VOICE -> Ollama: Claudius, présente-toi
-[21:21:00] VOICE reply: Bonjour, je suis Claudius...
-[21:21:07] Piper synth: 1.24s
-```
+1. **Pré-filtre RMS** — Si l'énergie moyenne de l'utterance est < 70% du seuil, pas de transcription du tout
+2. **Filtre keywords** — Liste de mots-clés hallucination connus (amara, sous-titres, abonnez, etc.)
+3. **Filtre logprob** — Si `avg_logprob < -0.7`, Whisper n'est pas confiant → rejet
+
+En plus :
+- **Cooldown 2s** entre deux envois (anti-flood)
+- **Queue unique** à 1 worker (pas de threads multiples de transcription)
+- **Singleton PID** (une seule instance de Voice/Bridge peut tourner)
 
 ---
 
-## 🧑‍💻 Développement
+## 📊 Performances mesurées (RTX 3060, i5)
 
-### Workbench
+| Étape | Durée |
+|-------|-------|
+| Transcription Whisper small CUDA float16 | ~0.4-0.8s |
+| Appel API Claude Haiku | ~1-2s |
+| Synthèse Piper Jessica GPU | ~0.3-0.7s |
+| Playback winsound | durée audio |
+| **Latence totale** (fin parole → début réponse) | **~3-4s** |
 
-Le développement se fait dans :
-```
-C:\Users\PC\Downloads\Claude AI Workbench\kinect\
-```
-
-Les fichiers validés sont ensuite copiés dans `C:\Kinect\` (production).
-
-### Workflow de déploiement
-
-```cmd
-# 1. Tuer les process en cours
-taskkill /F /IM pythonw.exe
-
-# 2. Copier vers production
-copy KinectBridge.py C:\Kinect\
-copy KinectVoice.py  C:\Kinect\
-copy KinectTTS.py    C:\Kinect\
-
-# 3. Relancer
-start /MIN C:\Python314\pythonw.exe C:\Kinect\KinectBridge.py
-timeout /t 3
-start /MIN C:\Python314\pythonw.exe C:\Kinect\KinectVoice.py
-```
-
-### Commit
-
-```cmd
-cd "C:\Users\PC\Downloads\Claude AI Workbench\kinect"
-git add KinectBridge.py KinectVoice.py KinectTTS.py README.md
-git commit -m "feat: description du changement"
-git push
-```
+| Ressource | Usage |
+|-----------|-------|
+| RAM KinectVoice (Whisper small) | ~810 MB |
+| RAM KinectBridge (Piper) | ~270 MB |
+| RAM KinectTranscript (Flask) | ~38 MB |
+| VRAM GPU | ~1.5 GB (Whisper + Piper ONNX) |
+| Coût API mensuel (50 msg/jour) | ~0.40€ |
 
 ---
 
-## 📜 Licence
+## 🔧 Dépannage
 
-MIT — Fais-en ce que tu veux. Un crédit sympa est toujours apprécié.
+**Claudius ne m'entend pas**
+- Vérifier `BIRD_DEVICE_ID` dans KinectVoice.py
+- Vérifier que le seuil RMS n'est pas trop haut (logs : `Ambiant: XXX -> seuil: 800`)
+- Si ambiant > 600, augmenter `FIXED_THRESHOLD`
+
+**Hallucinations Whisper**
+- Ajouter les mots-clés récurrents dans `HALLUCINATION_KEYWORDS`
+- Baisser `log_prob_threshold` dans `transcribe()` si trop de faux positifs passent
+
+**Plusieurs instances Python zombies**
+- Les singletons PID tuent automatiquement les anciennes instances au relancement
+- Vérifier avec : `Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Select ProcessId, CommandLine`
+
+**Pas de GPU / CUDA**
+- Installer : `pip install nvidia-cublas-cu12 nvidia-cudnn-cu12`
+- Vérifier : `python -c "import ctranslate2; print(ctranslate2.get_supported_compute_types('cuda'))"`
+- Fallback CPU automatique si CUDA indisponible
+
+**Piper TTS lent (~7s)**
+- Installer `onnxruntime-gpu` (remplace `onnxruntime`)
+- Vérifier : `python -c "import onnxruntime; print(onnxruntime.get_available_providers())"`
+- Doit afficher `CUDAExecutionProvider`
+
+**Erreur API Claude**
+- Vérifier `C:\Kinect\api_key.txt` (clé valide, pas d'espaces)
+- Logs : chercher `ERR claude:` dans `kinect.log`
 
 ---
 
-*Claudius v1 — Chapitre 1 complété le 11 mars 2026.*  
-*Construit avec ❤️ sur Windows 10, une RTX 3060, et une Kinect rescapée d'une cave.*
+## 📜 Historique
+
+| Version | Date | Changements |
+|---------|------|-------------|
+| v2.0 | 2026-03-18 | Singleton PID, queue anti-flood, triple filtre hallucination, pré-filtre RMS, contexte enrichi dynamique, audit complet, nettoyage repo |
+| v1.5 | 2026-03-12 | Migration Ollama → API Claude Haiku, Piper TTS Jessica GPU, clé API hors versioning, mémoire conversationnelle 6 échanges |
+| v1.0 | 2026-03-11 | Pipeline voix complet : Whisper + Ollama llama3.2:3b + pyttsx3 Hortense + edge-tts Neural. Gestes, auto-blink, sleep/wake |
+| v0.5 | 2026-03-10 | Channel 1 : moteur Kinect, snap RGB, cmd.txt watcher |
+| v0.1 | 2026-03-09 | Premier contact Kinect, drivers, tests SDK |
+
+---
+
+## 🗺️ Roadmap
+
+- [ ] **Détection de présence** — Skeleton tracking / depth pour détecter si quelqu'un est devant le Kinect
+- [ ] **Geste WAVE** — Détecter un geste de salut → Claudius salue automatiquement
+- [ ] **Vision** — Snap automatique → décrire ce qu'il voit via LLM vision
+- [ ] **Interface web dashboard** — Logs temps réel, contrôle, état depuis n'importe quel appareil du réseau
+- [ ] **Bras imprimés 3D** — Servos + pièces résine pour des gestes plus expressifs
+- [ ] **Voix custom** — Entraîner un modèle TTS sur une voix personnalisée
+
+---
+
+## 📄 Licence
+
+Projet personnel. Code source disponible à titre éducatif.
+
+---
+
+*Built with ❤️ by David — powered by a Kinect, some Python, and a lot of stubbornness.*
