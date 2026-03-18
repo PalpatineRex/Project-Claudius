@@ -34,10 +34,17 @@ def _enforce_singleton():
         try:
             old_pid = int(open(PID_FILE).read().strip())
             if old_pid != my_pid:
-                import signal
-                os.kill(old_pid, signal.SIGTERM)
+                try:
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    handle = kernel32.OpenProcess(1, False, old_pid)  # PROCESS_TERMINATE
+                    if handle:
+                        kernel32.TerminateProcess(handle, 0)
+                        kernel32.CloseHandle(handle)
+                except Exception:
+                    pass
                 time.sleep(0.5)
-        except (ValueError, OSError, ProcessLookupError):
+        except (ValueError, OSError):
             pass
     with open(PID_FILE, "w") as f:
         f.write(str(my_pid))

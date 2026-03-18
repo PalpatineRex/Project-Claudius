@@ -22,6 +22,7 @@ KinectMotor.exe
 
 # Backups locaux
 backup/
+archives/
 
 # Cle API (jamais commiter)
 api_key.txt

@@ -40,19 +40,27 @@ def _enforce_singleton():
         try:
             old_pid = int(open(BRIDGE_PID_FILE).read().strip())
             if old_pid != my_pid:
-                import signal
-                os.kill(old_pid, signal.SIGTERM)
+                try:
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    handle = kernel32.OpenProcess(1, False, old_pid)
+                    if handle:
+                        kernel32.TerminateProcess(handle, 0)
+                        kernel32.CloseHandle(handle)
+                except Exception:
+                    pass
                 time.sleep(0.5)
-        except (ValueError, OSError, ProcessLookupError):
+        except (ValueError, OSError):
             pass
     with open(BRIDGE_PID_FILE, "w") as f:
         f.write(str(my_pid))
 
-# Nettoyage fichiers residuels au boot
-for _f in (SLEEP_FILE, TTS_LOCK_FILE, CMD_FILE):
-    try:
-        if os.path.exists(_f): os.remove(_f)
-    except Exception: pass
+# Nettoyage fichiers residuels au boot — appele dans __main__ apres singleton
+def _cleanup_boot():
+    for _f in (SLEEP_FILE, TTS_LOCK_FILE, CMD_FILE):
+        try:
+            if os.path.exists(_f): os.remove(_f)
+        except Exception: pass
 
 # --- Etat global ---
 _piper_voice  = None
@@ -148,9 +156,9 @@ def _tts_wait(text):
                     winsound.PlaySound(PIPER_WAV, winsound.SND_FILENAME)
                 except Exception as e:
                     _log("ERR tts: " + str(e))
-                finally:
-                    try: os.remove(PIPER_WAV)
-                    except: pass
+            # Cleanup WAV hors du lock pour ne pas bloquer
+            try: os.remove(PIPER_WAV)
+            except: pass
         else:
             subprocess.call([PYTHON, TTS_PY, text, "--local"],
                             creationflags=subprocess.CREATE_NO_WINDOW)
@@ -169,13 +177,14 @@ _SYSTEM_FALLBACK = (
 
 def _load_system_prompt():
     """Charge le contexte enrichi depuis claudius_context.txt, avec fallback."""
-    try:
-        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
-            ctx = f.read().strip()
-        if ctx:
-            return ctx
-    except Exception:
-        pass
+    for path in [CONTEXT_FILE, r"C:\Kinect\claudius_context.txt"]:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                ctx = f.read().strip()
+            if ctx:
+                return ctx
+        except Exception:
+            continue
     return _SYSTEM_FALLBACK
 
 _conversation_history = []
@@ -233,12 +242,15 @@ def _handle_voice(text):
     _log("VOICE -> Claude: " + text[:60])
     result_box = [None]
     def _query():
-        result_box[0] = _ask_claude(text) or "Desole, je suis hors ligne."
+        try:
+            result_box[0] = _ask_claude(text)
+        except Exception as e:
+            _log("ERR _query: " + str(e))
     t = threading.Thread(target=_query, daemon=True)
     t.start()
     _run("think")
-    t.join()
-    reply = result_box[0]
+    t.join(timeout=20)
+    reply = result_box[0] or "Desole, je suis hors ligne."
     _log("VOICE reply: " + reply[:80])
     # Transcript temps reel
     try:
@@ -331,6 +343,9 @@ def watch_cmd():
 
 if __name__ == "__main__":
     _enforce_singleton()
+    _cleanup_boot()
+    if not ANTHROPIC_API_KEY:
+        _log("ERREUR: cle API absente (C:\\Kinect\\api_key.txt)")
     _log("=== KinectBridge demarrage (Claude Haiku) ===")
     threading.Thread(target=watch_cmd, daemon=True).start()
     threading.Thread(target=_auto_blink, daemon=True).start()
