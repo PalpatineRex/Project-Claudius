@@ -26,3 +26,5 @@ backup/
 # Cle API (jamais commiter)
 api_key.txt
 *.lock
+*.pid
+transcript.txt
