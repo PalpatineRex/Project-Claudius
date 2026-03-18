@@ -30,8 +30,9 @@ SLEEP_FILE      = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\claudius_sl
 HALLUCINATION_PATTERNS = [
     r"^\s*[\.\s\u2026]+\s*$",
     r"^[\s\W]+$",
-    r"^(merci|sous-titres|sous titres|transcription|abonne).{0,30}$",
+    r"^(merci|sous-titres|sous titres|transcription|abonne|amara|traduction|sous-titre).{0,60}$",
     r"^\s*$",
+    r".*(amara\.org|sous-titr|wikimedia|creative commons).*",
 ]
 
 def _log(msg):

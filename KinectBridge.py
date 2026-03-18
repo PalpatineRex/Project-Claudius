@@ -152,13 +152,21 @@ SYSTEM_PROMPT = (
     "Si tu ne comprends pas, demande de repeter. Ne te presente pas a chaque fois."
 )
 
+_conversation_history = []
+_history_lock = threading.Lock()
+MAX_HISTORY = 6  # nb d'echanges (user+assistant) gardes en memoire
+
 def _ask_claude(text):
+    global _conversation_history
+    with _history_lock:
+        _conversation_history.append({"role": "user", "content": text})
+        messages = list(_conversation_history)
     try:
         payload = json.dumps({
             "model": ANTHROPIC_MODEL,
             "max_tokens": 80,
             "system": SYSTEM_PROMPT,
-            "messages": [{"role": "user", "content": text}]
+            "messages": messages
         }).encode("utf-8")
         req = urllib.request.Request(ANTHROPIC_URL, data=payload, method="POST", headers={
             "Content-Type": "application/json",
@@ -166,9 +174,19 @@ def _ask_claude(text):
             "anthropic-version": "2023-06-01"
         })
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode())["content"][0]["text"].strip()
+            reply = json.loads(resp.read().decode())["content"][0]["text"].strip()
+        with _history_lock:
+            _conversation_history.append({"role": "assistant", "content": reply})
+            # Garder seulement les MAX_HISTORY derniers echanges (paires user/assistant)
+            if len(_conversation_history) > MAX_HISTORY * 2:
+                _conversation_history = _conversation_history[-(MAX_HISTORY * 2):]
+        return reply
     except Exception as e:
         _log("ERR claude: " + str(e))
+        with _history_lock:
+            # Retirer le message user si la requete a echoue
+            if _conversation_history and _conversation_history[-1]["role"] == "user":
+                _conversation_history.pop()
         return None
 
 # --- Gestes ---
