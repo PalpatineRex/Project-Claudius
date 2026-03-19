@@ -8,7 +8,35 @@ import sounddevice as sd
 import numpy as np
 import time, os, re, threading, queue, sys
 
-BIRD_DEVICE_ID  = 1
+# --- Detection audio systeme (mute quand video/musique joue) ---
+_system_audio_active = False
+_AUDIO_IGNORE = {"pythonw.exe", "python.exe"}  # nos propres process TTS
+
+def _audio_monitor():
+    """Thread qui check toutes les 0.5s si du son systeme joue."""
+    global _system_audio_active
+    try:
+        from pycaw.pycaw import AudioUtilities
+    except ImportError:
+        _log("pycaw absent — pas de detection audio systeme")
+        return
+    while True:
+        try:
+            sessions = AudioUtilities.GetAllSessions()
+            active = False
+            for s in sessions:
+                if s.State == 1:  # AudioSessionState.Active
+                    name = s.Process.name() if s.Process else "system"
+                    if name.lower() not in _AUDIO_IGNORE:
+                        active = True
+                        break
+            if active != _system_audio_active:
+                _system_audio_active = active
+                _log(f"Audio systeme: {'ACTIF — mute voice' if active else 'inactif — ecoute'}")
+        except Exception:
+            pass
+        time.sleep(0.5)
+
 SAMPLE_RATE     = 16000
 CHUNK_DURATION  = 0.1
 CHUNK_SAMPLES   = int(SAMPLE_RATE * CHUNK_DURATION)
@@ -16,16 +44,19 @@ CHUNK_SAMPLES   = int(SAMPLE_RATE * CHUNK_DURATION)
 SILENCE_AFTER   = 1.5
 MIN_DURATION    = 0.8
 MAX_DURATION    = 8.0
-FIXED_THRESHOLD = 800
+FIXED_THRESHOLD = 1000
 MODEL_SIZE      = "small"
 
-BASE_DIR        = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect"
+# Chemins portables : relatifs au script, overridables par env
+BASE_DIR        = os.environ.get("CLAUDIUS_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 CMD_FILE        = os.path.join(BASE_DIR, "cmd.txt")
 LOG_FILE        = os.path.join(BASE_DIR, "kinect.log")
 TRANSCRIPT_FILE = os.path.join(BASE_DIR, "transcript.txt")
 TTS_LOCK_FILE   = os.path.join(BASE_DIR, "tts_speaking.lock")
 SLEEP_FILE      = os.path.join(BASE_DIR, "claudius_sleep.lock")
 PID_FILE        = os.path.join(BASE_DIR, "voice.pid")
+# Micro : index du device (overridable par env, -1 = default systeme)
+BIRD_DEVICE_ID  = int(os.environ.get("CLAUDIUS_MIC_DEVICE", "1"))
 
 # --- Singleton : tue les instances precedentes ---
 def _enforce_singleton():
@@ -112,8 +143,8 @@ def transcribe(frames, model):
         language="fr",
         beam_size=5,
         vad_filter=False,
-        no_speech_threshold=0.6,
-        log_prob_threshold=-1.0,
+        no_speech_threshold=0.4,
+        log_prob_threshold=-0.5,
         compression_ratio_threshold=2.4,
     )
     seg_list = list(segments)
@@ -173,7 +204,8 @@ def calibrate(stream, duration=2.0):
     _log(f"Calibration {duration}s — silence svp...")
     levels = [rms(stream.read(CHUNK_SAMPLES)[0]) for _ in range(int(duration / CHUNK_DURATION))]
     ambient = float(np.mean(levels))
-    threshold = FIXED_THRESHOLD if FIXED_THRESHOLD > 0 else max(ambient * 4.0, 200.0)
+    # Seuil = max(FIXED_THRESHOLD, ambiant * 1.5) pour s'adapter au bruit
+    threshold = max(FIXED_THRESHOLD, ambient * 1.5)
     _log(f"Ambiant: {ambient:.0f} -> seuil: {threshold:.0f}")
     return threshold
 
@@ -183,6 +215,7 @@ def listen_loop(model, threshold, stream):
     frames    = []
     t_silence = 0.0
     t_speech  = 0.0
+    rms_peak  = 0.0
     # Anti-flood : cooldown apres envoi d'une utterance
     last_send_time = 0.0
     COOLDOWN = 2.0  # secondes minimum entre deux envois
@@ -191,10 +224,10 @@ def listen_loop(model, threshold, stream):
         chunk, _ = stream.read(CHUNK_SAMPLES)
         level    = rms(chunk)
 
-        # TTS actif : reset silencieux
-        if os.path.exists(TTS_LOCK_FILE):
+        # TTS actif ou audio systeme (video, musique) : reset silencieux
+        if os.path.exists(TTS_LOCK_FILE) or _system_audio_active:
             if recording:
-                recording = False; frames = []; t_speech = 0.0; t_silence = 0.0
+                recording = False; frames = []; t_speech = 0.0; t_silence = 0.0; rms_peak = 0.0
             continue
 
         if level > threshold:
@@ -202,43 +235,48 @@ def listen_loop(model, threshold, stream):
                 # Anti-flood cooldown
                 if time.time() - last_send_time < COOLDOWN:
                     continue
-                _log(f"Voix detectee (RMS={level:.0f})")
                 recording = True; frames = []; t_speech = 0.0; t_silence = 0.0
             frames.append(chunk.copy())
             t_speech += CHUNK_DURATION
             t_silence = 0.0
+            if level > rms_peak:
+                rms_peak = level
             if t_speech >= MAX_DURATION:
-                _log("MAX_DURATION")
+                _log(f"MAX_DURATION ({rms_peak:.0f} peak)")
                 try:
                     _transcribe_queue.put_nowait(frames[:])
                 except queue.Full:
                     _log("Queue pleine — utterance ignoree")
                 last_send_time = time.time()
-                recording = False; frames = []; t_speech = 0.0; t_silence = 0.0
+                recording = False; frames = []; t_speech = 0.0; t_silence = 0.0; rms_peak = 0.0
         else:
             if recording:
                 frames.append(chunk.copy())
                 t_silence += CHUNK_DURATION
                 if t_silence >= SILENCE_AFTER:
                     if t_speech >= MIN_DURATION:
-                        _log(f"Fin utterance ({t_speech:.1f}s)")
+                        _log(f"Fin utterance ({t_speech:.1f}s, RMS peak={rms_peak:.0f})")
                         try:
                             _transcribe_queue.put_nowait(frames[:])
                         except queue.Full:
                             _log("Queue pleine — utterance ignoree")
                         last_send_time = time.time()
                     else:
-                        _log(f"Trop court ({t_speech:.2f}s)")
-                    recording = False; frames = []; t_speech = 0.0; t_silence = 0.0
+                        pass  # Trop court — silencieux pour ne pas polluer les logs
+                    recording = False; frames = []; t_speech = 0.0; t_silence = 0.0; rms_peak = 0.0
 
 # --- Entrypoint ---
 
 if __name__ == "__main__":
     _enforce_singleton()
 
-    for p in [r"C:\Python314\Lib\site-packages\nvidia\cublas\bin",
-              r"C:\Python314\Lib\site-packages\nvidia\cudnn\bin"]:
-        os.environ["PATH"] = p + ";" + os.environ.get("PATH", "")
+    # CUDA DLLs — chercher automatiquement dans site-packages nvidia
+    import site
+    for sp in site.getsitepackages():
+        for sub in ["nvidia/cublas/bin", "nvidia/cudnn/bin"]:
+            p = os.path.join(sp, sub)
+            if os.path.isdir(p):
+                os.environ["PATH"] = p + ";" + os.environ.get("PATH", "")
     try:
         import ctranslate2
         ctranslate2.get_supported_compute_types("cuda")
@@ -250,10 +288,18 @@ if __name__ == "__main__":
     from faster_whisper import WhisperModel
     model = WhisperModel(MODEL_SIZE, device=device, compute_type=compute)
     _log(f"Modele pret. [{device.upper()} {compute}]")
+    try:
+        dev_info = sd.query_devices(BIRD_DEVICE_ID)
+        _log(f"Audio: {dev_info['name']} (device {BIRD_DEVICE_ID})")
+    except Exception:
+        _log(f"Audio: device {BIRD_DEVICE_ID} (info indispo)")
 
     # Thread unique de transcription (pas de threads multiples)
     worker = threading.Thread(target=_transcription_worker, args=(model,), daemon=True)
     worker.start()
+
+    # Thread detection audio systeme (mute quand video/musique)
+    threading.Thread(target=_audio_monitor, daemon=True).start()
 
     with sd.InputStream(device=BIRD_DEVICE_ID, samplerate=SAMPLE_RATE,
                         channels=1, dtype="int16", blocksize=CHUNK_SAMPLES) as stream:

@@ -3,10 +3,12 @@ KinectTranscript.py - Serveur transcript temps reel pour Claudius
 Ouvre http://localhost:5005 dans Chrome pour voir la conversation.
 Lance en parallele de KinectBridge.
 """
-from flask import Flask, Response, send_from_directory
+from flask import Flask, Response, send_from_directory, request, jsonify
 import os, time
 
-TRANSCRIPT_FILE = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\transcript.txt"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.environ.get("CLAUDIUS_DATA_DIR", _SCRIPT_DIR)
+TRANSCRIPT_FILE = os.path.join(_DATA_DIR, "transcript.txt")
 app = Flask(__name__)
 
 HTML = """<!DOCTYPE html>
@@ -67,7 +69,6 @@ def index():
 
 @app.route("/lines")
 def lines():
-    from flask import request, jsonify
     start = int(request.args.get("from", 0))
     try:
         with open(TRANSCRIPT_FILE, "r", encoding="utf-8") as f:
