@@ -7,11 +7,15 @@ Usage: python KinectTTS.py "texte" [--local|--neural]
 """
 import sys, time, os, subprocess, wave
 
-LOG_FILE   = r"C:\Users\PC\Downloads\Claude AI Workbench\kinect\kinect.log"
-PIPER_MODEL      = r"C:\Kinect\piper\fr_FR-upmc-medium.onnx"
-PIPER_MODEL_JSON = r"C:\Kinect\piper\fr_FR-upmc-medium.onnx.json"
-PIPER_WAV        = r"C:\Kinect\tts_tmp.wav"
-PIPER_MP3        = r"C:\Kinect\tts_tmp.mp3"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_KINECT_DIR = os.environ.get("CLAUDIUS_KINECT_DIR", _SCRIPT_DIR)
+_DATA_DIR   = os.environ.get("CLAUDIUS_DATA_DIR", _SCRIPT_DIR)
+
+LOG_FILE         = os.path.join(_DATA_DIR, "kinect.log")
+PIPER_MODEL      = os.path.join(_KINECT_DIR, "piper", "fr_FR-upmc-medium.onnx")
+PIPER_MODEL_JSON = os.path.join(_KINECT_DIR, "piper", "fr_FR-upmc-medium.onnx.json")
+PIPER_WAV        = os.path.join(_DATA_DIR, "tts_tmp.wav")
+PIPER_MP3        = os.path.join(_DATA_DIR, "tts_tmp.mp3")
 VOICE_INDEX      = 0  # pyttsx3: 0=Hortense FR
 
 def _log(msg):

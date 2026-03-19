@@ -189,15 +189,21 @@ def _blend_voices(j_audio, s_audio, ratio=0.5):
     nj = max(1, len(j) // seg_len)
     ns = max(1, len(s) // seg_len)
     
-    # --- Features spectrales par segment (mel-like bands) ---
+    # --- Features spectrales vectorisees (mel-like bands) ---
     def _mel_features(audio, seg, n_bands):
         n_segs = len(audio) // seg
-        feats = np.zeros((n_segs, n_bands))
-        for i in range(n_segs):
-            spec = np.abs(np.fft.rfft(audio[i*seg:(i+1)*seg])) ** 2
-            bsz = max(1, len(spec) // n_bands)
-            for b in range(n_bands):
-                feats[i, b] = np.sum(spec[b*bsz : min((b+1)*bsz, len(spec))])
+        if n_segs == 0:
+            return np.zeros((1, n_bands))
+        # Reshape + FFT batch (pas de boucle Python)
+        trimmed = audio[:n_segs * seg].reshape(n_segs, seg)
+        specs = np.abs(np.fft.rfft(trimmed, axis=1)) ** 2  # (n_segs, n_freq)
+        n_freq = specs.shape[1]
+        bsz = max(1, n_freq // n_bands)
+        # Somme par bande via reshape+sum (pad si necessaire)
+        pad_len = bsz * n_bands - n_freq
+        if pad_len > 0:
+            specs = np.pad(specs, ((0,0),(0,pad_len)))
+        feats = specs[:, :bsz * n_bands].reshape(n_segs, n_bands, bsz).sum(axis=2)
         return feats
     
     fj = _mel_features(j, seg_len, n_mel)
@@ -208,12 +214,26 @@ def _blend_voices(j_audio, s_audio, ratio=0.5):
     fs_n = fs / (np.linalg.norm(fs, axis=1, keepdims=True) + 1e-10)
     dist = 1.0 - fj_n @ fs_n.T  # (nj, ns) cosine distance
     
-    # --- DTW ---
+    # --- DTW (acces array direct, evite min() Python) ---
     cost = np.full((nj + 1, ns + 1), np.inf)
     cost[0, 0] = 0.0
+    # Acces direct aux arrays pour eviter l'overhead Python de min()
+    cost_flat = cost.ravel()
+    stride = ns + 1
     for i in range(1, nj + 1):
+        di = dist[i - 1]  # (ns,) distances pour cette ligne
+        base = i * stride
+        base_prev = (i - 1) * stride
         for k in range(1, ns + 1):
-            cost[i, k] = dist[i-1, k-1] + min(cost[i-1, k], cost[i, k-1], cost[i-1, k-1])
+            d = di[k - 1]
+            c_diag = cost_flat[base_prev + k - 1]
+            c_up   = cost_flat[base_prev + k]
+            c_left = cost_flat[base + k - 1]
+            # Inline min — plus rapide que min() builtin sur 3 args
+            m = c_diag
+            if c_up < m: m = c_up
+            if c_left < m: m = c_left
+            cost_flat[base + k] = d + m
     
     # Backtrack
     path = []
@@ -265,8 +285,9 @@ def _blend_voices(j_audio, s_audio, ratio=0.5):
         n_bins = n_fft // 2 + 1
         
         # --- Gate ameliore : silence + transitions rapides ---
-        # RMS par segment (utilise pour le gate, pas pour le DTW)
-        env_j = np.array([np.sqrt(np.mean(j[i*seg_len:(i+1)*seg_len]**2)) for i in range(nj)])
+        # RMS par segment vectorise (utilise pour le gate, pas pour le DTW)
+        j_segs = j[:nj * seg_len].reshape(nj, seg_len)
+        env_j = np.sqrt(np.mean(j_segs ** 2, axis=1))
         env_j_peak = np.max(env_j) if nj > 0 else 1.0
         gate_thresh = env_j_peak * 0.12  # 12% plus agressif
         gate_seg = np.where(env_j > gate_thresh, 1.0, (env_j / gate_thresh) ** 2)  # courbe quadratique = fade plus rapide
@@ -303,15 +324,18 @@ def _blend_voices(j_audio, s_audio, ratio=0.5):
         gain = np.where(energy_b > 0, np.sqrt(energy_j / energy_b), 1.0)
         mag_blend *= gain[None, :]
         
-        # iSTFT vectorisee overlap-add
+        # iSTFT vectorisee overlap-add (np.add.at evite la boucle Python)
         blend_frames = np.fft.irfft(mag_blend * np.exp(1j * phase_j), axis=0).T  # (n_frames, n_fft)
         blend_frames *= win[None, :]
+        win_sq = win ** 2
         out = np.zeros(n_out, dtype=np.float64)
         win_sum = np.zeros(n_out, dtype=np.float64)
-        for f in range(n_frames):
-            start = f * hop
-            out[start:start + n_fft] += blend_frames[f]
-            win_sum[start:start + n_fft] += win ** 2
+        # Indices vectorises pour overlap-add sans boucle
+        frame_idx = np.arange(n_frames)[:, None]  # (n_frames, 1)
+        sample_idx = np.arange(n_fft)[None, :]    # (1, n_fft)
+        target_idx = (frame_idx * hop + sample_idx).ravel()  # indices absolus
+        np.add.at(out, target_idx, blend_frames.ravel())
+        np.add.at(win_sum, target_idx, np.tile(win_sq, n_frames))
         stable_mask = win_sum > 0.1
         out[stable_mask] /= win_sum[stable_mask]
         out[~stable_mask] = j_trimmed[~stable_mask]
@@ -367,13 +391,15 @@ _ACCENT_MAP = {
     "resume": "résumé", "passe": "passé", "cote": "côté",
 }
 
+_ACCENT_RE = re.compile(r"^([A-Za-zÀ-ÿ'-]+)(.*)")
+_AVOIR_SUBJECTS = frozenset(("il", "elle", "on", "qui", "david", "claudius", "ca", "cela", "tout", "ça"))
+
 def _reaccentuate(text):
     """Remet les accents FR sur les mots courants avant envoi a Piper."""
     words = text.split()
     out = []
     for idx, w in enumerate(words):
-        # Separer la ponctuation
-        match = re.match(r"^([A-Za-zÀ-ÿ'-]+)(.*)", w)
+        match = _ACCENT_RE.match(w)
         if not match:
             out.append(w)
             continue
@@ -381,9 +407,8 @@ def _reaccentuate(text):
         lower = core.lower()
         # Cas special "a" -> "à" seulement si c'est la preposition
         if lower == "a":
-            # Verifier le contexte : si le mot precedent est un sujet, c'est le verbe avoir
             prev = words[idx-1].lower().rstrip(".,!?;:") if idx > 0 else ""
-            if prev in ("il", "elle", "on", "qui", "david", "claudius", "ca", "cela", "tout", "ça"):
+            if prev in _AVOIR_SUBJECTS:
                 out.append(w)  # verbe avoir, pas de changement
                 continue
         if lower in _ACCENT_MAP:
