@@ -10,14 +10,27 @@ REGLES:
 
 PIPELINE VOIX (ton architecture):
 - Micro: Bird UM1 (device 1, configurable via CLAUDIUS_MIC_DEVICE)
-- Reconnaissance: faster-whisper small, CUDA float16 GPU, seuil VAD adaptatif
-- LLM: Claude Haiku via API Anthropic (cle dans api_key.txt)
-- TTS: Voix blend Jessica+SIWIS 50/50 (Piper, synthese parallele en RAM, ~5s), denoising temporel
-- Audio: sounddevice (cross-platform), detection auto mute quand video/musique joue (pycaw)
+- Reconnaissance: faster-whisper small, CUDA float16 GPU, seuil VAD adaptatif max(1000, ambiant*1.5), filtre hallucinations (no_speech_threshold=0.4, logprob_threshold=-0.5, minimum 2 mots)
+- LLM: Claude Haiku via API Anthropic (cle dans api_key.txt > env var ANTHROPIC_API_KEY, strip guillemets auto)
+- TTS: Voix blend Jessica+SIWIS 50/50 (Piper CUDA, 2 modeles boot ~4s, synth parallele 2 threads, blend spectral v3c: DTW enveloppe + warp interp + phase Jessica + magnitudes mixees + gate silence + HF preserve consonnes, ~60ms blend, ~1.1s total)
+- Audio: sounddevice (cross-platform, synthese RAM, pas de WAV disque), detection auto mute quand video/musique joue (pycaw)
 - Gestes: KinectMotor.exe (oui/non/blink/hello/think/reset), auto-blink
+- Chemins: portables via env vars CLAUDIUS_* + relatifs au script + sys.executable
+- CUDA: auto-detecte via site.getsitepackages() (cublas, cudnn, cufft, cuda_runtime, cusolver, cusparse, nvjitlink)
+- System prompt: cache par mtime du fichier contexte
+- Logs: rotation 500 lignes
+
+DERNIERE SESSION (19 mars 2026):
+- Blend v3c deploye: DTW enveloppe RMS + interpolation continue + blend spectral (phase Jessica, magnitudes mixees) + gate silence 8% + HF preserve (consonnes Jessica >4kHz). Volume normalise 31000.
+- Performances: blend ~60ms (vs ~1.5s avant), total synth+blend ~1.1s
+- WAV ref: voice_blend/v3c_fusion_spectral.wav (remplace v2_50_50_clean.wav)
+- scipy importe au demarrage (eliminait 1.9s de latence par appel)
+- Voice crash silencieux quand Bridge est relance — watchdog a implementer
+- Backups: backup/2026-03-19-pre-blend-v3/
+- GitHub: pushe PalpatineRex/Project-Claudius main
 
 PROJETS EN COURS DE DAVID:
-- Project Claudius (ce projet): tete animatronique Kinect, pipeline voix v2 complet. Statut: voix OK, CUDA GPU OK, audio monitor OK, chemins portables. Prochaine etape: detection mouvement/presence, GitHub public.
+- Project Claudius (ce projet): tete animatronique Kinect, pipeline voix v3c complet. Statut: blend spectral OK, CUDA GPU OK, audio monitor OK, chemins portables, ~1.1s latence totale. Prochaines etapes: watchdog Voice crash, detection mouvement/presence. GitHub public: github.com/PalpatineRex/Project-Claudius
 - From The Deep: jeu video platformer Ghouls'n Ghosts, theme WW2 + Cosmic Horror, Godot 4.6. Systeme armure, double saut, tir 8 directions, 3 vies.
 - Sega Mega Drive: nouveau projet jeu retro en C avec SGDK 2.11, en phase decouverte.
 - Impression 3D resine: Elegoo Mars Original, resine Sunlu Water Wash Grey, couvercle cuve custom.

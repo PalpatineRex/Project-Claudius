@@ -1,14 +1,23 @@
 """
-KinectBridge.py - Pont Kinect, demarre avec Windows
-LLM  : Claude Haiku via API Anthropic
-TTS  : Piper Jessica in-process, lazy load
-Audio: sounddevice (cross-platform, non-bloquant)
-Commandes: oui/non/blink/hello/think/reset/snap/sleep/wake + VOICE:texte
+KinectBridge.py - Pont principal Project Claudius
+Tete animatronique Kinect Xbox 360.
+
+LLM   : Claude Haiku via API Anthropic
+TTS   : Piper Jessica+SIWIS blend spectral (CUDA)
+Audio : sounddevice (cross-platform, RAM)
+Moteur: KinectMotor.exe (oui/non/blink/hello/think/reset/snap)
+Cmds  : oui/non/blink/hello/think/reset/snap/sleep/wake + VOICE:texte
+
+https://github.com/PalpatineRex/Project-Claudius
 """
-import subprocess, os, time, threading, random, json, wave, sys
+import subprocess, os, time, threading, random, json, wave, sys, re
 import urllib.request
 import numpy as np
 import sounddevice as sd
+try:
+    from scipy.ndimage import uniform_filter1d as _smooth1d
+except ImportError:
+    _smooth1d = None
 
 # --- Chemins : relatifs au script, overridables par env ---
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -163,28 +172,234 @@ def _load_piper_bg():
             _piper_ready.set()
 
 def _blend_voices(j_audio, s_audio, ratio=0.5):
-    """Blend Jessica+SIWIS — scipy.resample + spectral subtraction (v2_50_50_clean)."""
-    from scipy.signal import resample, stft, istft
+    """Blend Jessica+SIWIS — DTW spectral + warp continu + blend spectral (fusion DBZ v3d).
+    
+    1. Features spectrales (mel bands 13) par segment 25ms → alignement phonemique
+    2. DTW cosine sur features → warping path
+    3. Warp continu np.interp → SIWIS alignee sample par sample
+    4. STFT vectorisee + blend magnitudes + phase Jessica
+    5. Gate silence + HF preserve consonnes + conservation energie
+    """
+    sr = 22050
+    seg_len = int(sr * 0.025)  # 25ms = 551 samples (2x plus fin)
+    n_mel = 13  # bandes spectrales pour l'alignement
+    
     j = j_audio.astype(np.float64)
-    s = resample(s_audio.astype(np.float64), len(j))
-    blend = j * (1.0 - ratio) + s * ratio
-    # Spectral subtraction
-    n_fft, hop = 2048, 512
-    f, t, Zxx = stft(blend, fs=22050, nperseg=n_fft, noverlap=n_fft - hop)
-    mag = np.abs(Zxx)
-    phase = np.angle(Zxx)
-    noise_est = np.mean(mag[:, :5], axis=1, keepdims=True)
-    mag_clean = np.maximum(mag - 1.5 * noise_est, 0.03 * mag)
-    _, out = istft(mag_clean * np.exp(1j * phase), fs=22050, nperseg=n_fft, noverlap=n_fft - hop)
-    if len(out) < len(j):
-        out = np.pad(out, (0, len(j) - len(out)))
-    out = out[:len(j)]
+    s = s_audio.astype(np.float64)
+    nj = max(1, len(j) // seg_len)
+    ns = max(1, len(s) // seg_len)
+    
+    # --- Features spectrales par segment (mel-like bands) ---
+    def _mel_features(audio, seg, n_bands):
+        n_segs = len(audio) // seg
+        feats = np.zeros((n_segs, n_bands))
+        for i in range(n_segs):
+            spec = np.abs(np.fft.rfft(audio[i*seg:(i+1)*seg])) ** 2
+            bsz = max(1, len(spec) // n_bands)
+            for b in range(n_bands):
+                feats[i, b] = np.sum(spec[b*bsz : min((b+1)*bsz, len(spec))])
+        return feats
+    
+    fj = _mel_features(j, seg_len, n_mel)
+    fs = _mel_features(s, seg_len, n_mel)
+    
+    # Distance cosine (meilleure que L2 pour comparer des spectres)
+    fj_n = fj / (np.linalg.norm(fj, axis=1, keepdims=True) + 1e-10)
+    fs_n = fs / (np.linalg.norm(fs, axis=1, keepdims=True) + 1e-10)
+    dist = 1.0 - fj_n @ fs_n.T  # (nj, ns) cosine distance
+    
+    # --- DTW ---
+    cost = np.full((nj + 1, ns + 1), np.inf)
+    cost[0, 0] = 0.0
+    for i in range(1, nj + 1):
+        for k in range(1, ns + 1):
+            cost[i, k] = dist[i-1, k-1] + min(cost[i-1, k], cost[i, k-1], cost[i-1, k-1])
+    
+    # Backtrack
+    path = []
+    i, k = nj, ns
+    while i > 0 or k > 0:
+        if i > 0 and k > 0:
+            path.append((i-1, k-1))
+        elif i > 0:
+            path.append((i-1, max(0, k-1)))
+        else:
+            break
+        choices = []
+        if i > 0 and k > 0: choices.append((cost[i-1, k-1], i-1, k-1))
+        if i > 0:            choices.append((cost[i-1, k],   i-1, k))
+        if k > 0:            choices.append((cost[i, k-1],   i,   k-1))
+        _, ni, nk = min(choices)
+        if ni == i and nk == k:
+            break
+        i, k = ni, nk
+    path.reverse()
+    
+    # --- Warp continu ---
+    j_anchors = np.array([(ji + 0.5) * seg_len for ji, si in path], dtype=np.float64)
+    s_anchors = np.array([(si + 0.5) * seg_len for ji, si in path], dtype=np.float64)
+    n_out = nj * seg_len
+    s_positions = np.clip(np.interp(np.arange(n_out, dtype=np.float64), j_anchors, s_anchors), 0, len(s) - 1)
+    s_idx = s_positions.astype(np.int64)
+    s_frac = s_positions - s_idx
+    s_idx_next = np.minimum(s_idx + 1, len(s) - 1)
+    s_warped = s[s_idx] * (1.0 - s_frac) + s[s_idx_next] * s_frac
+    
+    # --- Blend spectral ---
+    j_trimmed = j[:n_out]
+    n_fft = 2048
+    hop = 512
+    win = np.hanning(n_fft)
+    n_frames = (n_out - n_fft) // hop + 1
+    if n_frames < 1:
+        out = j_trimmed * (1.0 - ratio) + s_warped * ratio
+    else:
+        # STFT vectorisee
+        starts = np.arange(n_frames) * hop
+        idx = starts[:, None] + np.arange(n_fft)[None, :]
+        J = np.fft.rfft(j_trimmed[idx] * win[None, :], axis=1).T
+        S = np.fft.rfft(s_warped[idx] * win[None, :], axis=1).T
+        mag_j = np.abs(J)
+        mag_s = np.abs(S)
+        phase_j = np.angle(J)
+        n_bins = n_fft // 2 + 1
+        
+        # --- Gate ameliore : silence + transitions rapides ---
+        # RMS par segment (utilise pour le gate, pas pour le DTW)
+        env_j = np.array([np.sqrt(np.mean(j[i*seg_len:(i+1)*seg_len]**2)) for i in range(nj)])
+        env_j_peak = np.max(env_j) if nj > 0 else 1.0
+        gate_thresh = env_j_peak * 0.12  # 12% plus agressif
+        gate_seg = np.where(env_j > gate_thresh, 1.0, (env_j / gate_thresh) ** 2)  # courbe quadratique = fade plus rapide
+        gate_centers = np.array([(i + 0.5) * seg_len for i in range(nj)])
+        frame_centers = np.array([f * hop + n_fft // 2 for f in range(n_frames)], dtype=np.float64)
+        gate_frames = np.clip(np.interp(frame_centers, gate_centers, gate_seg), 0.0, 1.0)
+        
+        # HF preserve — consonnes Jessica >4kHz
+        freq_bins = np.arange(n_bins) * sr / n_fft
+        hf_mask = np.ones(n_bins)
+        hf_zone = (freq_bins > 4000) & (freq_bins <= 8000)
+        hf_mask[hf_zone] = 1.0 - 0.7 * (freq_bins[hf_zone] - 4000) / 4000
+        hf_mask[freq_bins > 8000] = 0.3
+        
+        # Detecteur de transitoires : frames ou l'energie change vite = consonnes
+        # Sur ces frames, reduire fortement SIWIS pour garder la nettete Jessica
+        energy_per_frame = np.sum(mag_j ** 2, axis=0)
+        energy_diff = np.abs(np.diff(energy_per_frame, prepend=energy_per_frame[0]))
+        energy_median = np.median(energy_per_frame) + 1e-10
+        transient_score = energy_diff / energy_median
+        # transient_mask: 1.0 = voyelle stable, 0.3 = consonne/transitoire
+        transient_mask = np.where(transient_score > 0.5, 0.3, 1.0)
+        # Smooth pour pas de coupure brutale
+        if _smooth1d is not None:
+            transient_mask = _smooth1d(transient_mask, size=3)
+        
+        eff_ratio = ratio * gate_frames[None, :] * hf_mask[:, None] * transient_mask[None, :]
+        mag_blend = mag_j * (1.0 - eff_ratio) + mag_s * eff_ratio
+        
+        # Conservation d'energie frame-par-frame : le blend ne doit pas
+        # reduire le volume par rapport a Jessica
+        energy_j = np.sum(mag_j ** 2, axis=0)  # energie par frame
+        energy_b = np.sum(mag_blend ** 2, axis=0)
+        gain = np.where(energy_b > 0, np.sqrt(energy_j / energy_b), 1.0)
+        mag_blend *= gain[None, :]
+        
+        # iSTFT vectorisee overlap-add
+        blend_frames = np.fft.irfft(mag_blend * np.exp(1j * phase_j), axis=0).T  # (n_frames, n_fft)
+        blend_frames *= win[None, :]
+        out = np.zeros(n_out, dtype=np.float64)
+        win_sum = np.zeros(n_out, dtype=np.float64)
+        for f in range(n_frames):
+            start = f * hop
+            out[start:start + n_fft] += blend_frames[f]
+            win_sum[start:start + n_fft] += win ** 2
+        stable_mask = win_sum > 0.1
+        out[stable_mask] /= win_sum[stable_mask]
+        out[~stable_mask] = j_trimmed[~stable_mask]
+    
+    # --- Normalisation (volume fort) ---
     peak = np.max(np.abs(out))
     if peak > 0:
-        out *= 28000.0 / peak
+        out *= 31000.0 / peak
     return out.astype(np.float32)
 
+# --- Re-accentuation FR (pre-TTS) ---
+# Piper prononce mal les mots sans accents (e muet au lieu de é/è/ê)
+# Dictionnaire: mot sans accent -> mot avec accent
+_ACCENT_MAP = {
+    "tete": "tête", "tetes": "têtes", "tres": "très", "ete": "été",
+    "pere": "père", "mere": "mère", "frere": "frère", "fete": "fête",
+    "bete": "bête", "pret": "prêt", "prete": "prête", "foret": "forêt",
+    "fenetre": "fenêtre", "interet": "intérêt", "arret": "arrêt",
+    "desole": "désolé", "desolee": "désolée", "idee": "idée",
+    "interessant": "intéressant", "interessante": "intéressante",
+    "interesse": "intéressé", "interessee": "intéressée",
+    "prefere": "préféré", "preferer": "préférer", "preferes": "préférés",
+    "repete": "répète", "repeter": "répéter", "cree": "créé",
+    "creee": "créée", "general": "général", "generale": "générale",
+    "probleme": "problème", "problemes": "problèmes",
+    "systeme": "système", "systemes": "systèmes",
+    "theme": "thème", "modele": "modèle", "modeles": "modèles",
+    "premiere": "première", "derniere": "dernière", "lumiere": "lumière",
+    "maniere": "manière", "matiere": "matière", "entiere": "entière",
+    "different": "différent", "differente": "différente",
+    "developpement": "développement", "developper": "développer",
+    "evenement": "événement", "element": "élément", "elements": "éléments",
+    "experience": "expérience", "necessaire": "nécessaire",
+    "reponse": "réponse", "repondre": "répondre",
+    "energie": "énergie", "securite": "sécurité", "realite": "réalité",
+    "verite": "vérité", "societe": "société", "qualite": "qualité",
+    "liberte": "liberté", "beaute": "beauté", "egalite": "égalité",
+    "deja": "déjà", "voila": "voilà", "la": "là", "ou": "où",
+    "a": "à",  # preposition
+    "evidemment": "évidemment", "generalement": "généralement",
+    "particulierement": "particulièrement", "completement": "complètement",
+    "immediatement": "immédiatement", "reellement": "réellement",
+    "eventuellement": "éventuellement", "sincerement": "sincèrement",
+    "etait": "était", "etaient": "étaient", "etes": "êtes",
+    "etat": "état", "etats": "états", "ecran": "écran",
+    "ecouter": "écouter", "ecoute": "écoute", "ecrit": "écrit",
+    "ecrire": "écrire", "electrique": "électrique",
+    "electronique": "électronique", "regle": "règle", "regles": "règles",
+    "reveil": "réveil", "reveler": "révéler", "eleve": "élève",
+    "celebre": "célèbre", "colere": "colère", "derriere": "derrière",
+    "legere": "légère", "leger": "léger", "severe": "sévère",
+    "numero": "numéro", "opera": "opéra", "cafe": "café",
+    "resume": "résumé", "passe": "passé", "cote": "côté",
+}
+
+def _reaccentuate(text):
+    """Remet les accents FR sur les mots courants avant envoi a Piper."""
+    words = text.split()
+    out = []
+    for idx, w in enumerate(words):
+        # Separer la ponctuation
+        match = re.match(r"^([A-Za-zÀ-ÿ'-]+)(.*)", w)
+        if not match:
+            out.append(w)
+            continue
+        core, punct = match.group(1), match.group(2)
+        lower = core.lower()
+        # Cas special "a" -> "à" seulement si c'est la preposition
+        if lower == "a":
+            # Verifier le contexte : si le mot precedent est un sujet, c'est le verbe avoir
+            prev = words[idx-1].lower().rstrip(".,!?;:") if idx > 0 else ""
+            if prev in ("il", "elle", "on", "qui", "david", "claudius", "ca", "cela", "tout", "ça"):
+                out.append(w)  # verbe avoir, pas de changement
+                continue
+        if lower in _ACCENT_MAP:
+            repl = _ACCENT_MAP[lower]
+            # Preserver la casse
+            if core[0].isupper():
+                repl = repl[0].upper() + repl[1:]
+            if core.isupper():
+                repl = repl.upper()
+            out.append(repl + punct)
+        else:
+            out.append(w)
+    return " ".join(out)
+
 def _tts_wait(text):
+    text = _reaccentuate(text)  # accents FR avant Piper
     _speaking.set()
     try: open(TTS_LOCK_FILE, "w").close()
     except: pass
