@@ -10,7 +10,7 @@ Cmds  : oui/non/blink/hello/think/reset/snap/sleep/wake + VOICE:texte
 
 https://github.com/PalpatineRex/Project-Claudius
 """
-import subprocess, os, time, threading, random, json, wave, sys, re
+import subprocess, os, time, threading, random, json, sys, re
 import urllib.request
 import numpy as np
 import sounddevice as sd
@@ -106,14 +106,17 @@ def _log(msg):
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line + "\n")
         _log_count += 1
-        if _log_count >= 500:  # rotation moins frequente
+        if _log_count >= 500:
             _log_count = 0
             try:
-                with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.readlines()
-                if len(lines) > LOG_MAX_LINES:
-                    with open(LOG_FILE, "w", encoding="utf-8") as f:
-                        f.writelines(lines[-LOG_MAX_LINES:])
+                size = os.path.getsize(LOG_FILE)
+                # ~80 chars/ligne * LOG_MAX_LINES = ~160KB. Si le fichier est petit, skip.
+                if size > LOG_MAX_LINES * 100:
+                    with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                        lines = f.readlines()
+                    if len(lines) > LOG_MAX_LINES:
+                        with open(LOG_FILE, "w", encoding="utf-8") as f:
+                            f.writelines(lines[-LOG_MAX_LINES:])
             except Exception:
                 pass
     except Exception:
@@ -256,8 +259,9 @@ def _blend_voices(j_audio, s_audio, ratio=0.5):
     path.reverse()
     
     # --- Warp continu ---
-    j_anchors = np.array([(ji + 0.5) * seg_len for ji, si in path], dtype=np.float64)
-    s_anchors = np.array([(si + 0.5) * seg_len for ji, si in path], dtype=np.float64)
+    path_arr = np.array(path)  # (N, 2)
+    j_anchors = (path_arr[:, 0] + 0.5) * seg_len
+    s_anchors = (path_arr[:, 1] + 0.5) * seg_len
     n_out = nj * seg_len
     s_positions = np.clip(np.interp(np.arange(n_out, dtype=np.float64), j_anchors, s_anchors), 0, len(s) - 1)
     s_idx = s_positions.astype(np.int64)
@@ -291,8 +295,8 @@ def _blend_voices(j_audio, s_audio, ratio=0.5):
         env_j_peak = np.max(env_j) if nj > 0 else 1.0
         gate_thresh = env_j_peak * 0.12  # 12% plus agressif
         gate_seg = np.where(env_j > gate_thresh, 1.0, (env_j / gate_thresh) ** 2)  # courbe quadratique = fade plus rapide
-        gate_centers = np.array([(i + 0.5) * seg_len for i in range(nj)])
-        frame_centers = np.array([f * hop + n_fft // 2 for f in range(n_frames)], dtype=np.float64)
+        gate_centers = (np.arange(nj) + 0.5) * seg_len
+        frame_centers = np.arange(n_frames, dtype=np.float64) * hop + n_fft // 2
         gate_frames = np.clip(np.interp(frame_centers, gate_centers, gate_seg), 0.0, 1.0)
         
         # HF preserve — consonnes Jessica >4kHz
@@ -458,7 +462,8 @@ def _tts_wait(text):
                     _log("ERR tts synth: " + str(e))
             if audio_data is not None:
                 try:
-                    sd.play(audio_data / 32768.0 if np.max(np.abs(audio_data)) > 1.0 else audio_data, samplerate=sample_rate)
+                    # Audio toujours en range int16 (peak ~31000) -> normalise [-1, 1]
+                    sd.play(audio_data / 32768.0, samplerate=sample_rate)
                     sd.wait()
                 except Exception as e:
                     _log("ERR tts play: " + str(e))
@@ -484,7 +489,7 @@ _cached_system_mtime = 0
 def _load_system_prompt():
     """Charge le contexte depuis claudius_context.txt, cache par mtime."""
     global _cached_system_prompt, _cached_system_mtime
-    for path in [CONTEXT_FILE, r"C:\Kinect\claudius_context.txt"]:
+    for path in [CONTEXT_FILE, os.path.join(_KINECT_DIR, "claudius_context.txt")]:
         try:
             mt = os.path.getmtime(path)
             if _cached_system_prompt and mt == _cached_system_mtime:
@@ -538,16 +543,22 @@ def _ask_claude(text):
 
 # --- Gestes ---
 
+# Mots-cles -> geste, scanne une seule fois
+_GESTURE_WORDS = {}
+for _g, _ws in [
+    ("oui",   ["oui","absolument","exactement","bien sur","correct","effectivement"]),
+    ("non",   ["non","pas vraiment","pas du tout","jamais"]),
+    ("hello", ["bonjour","salut","hello","bonsoir"]),
+    ("think", ["hmm","interessant","voyons","je pense","curieux"]),
+]:
+    for _w in _ws:
+        _GESTURE_WORDS[_w] = _g
+
 def _gesture_for(text):
     t = text.lower()
-    if any(w in t for w in ["oui","absolument","exactement","bien sur","correct","effectivement"]):
-        return "oui"
-    if any(w in t for w in ["non","pas vraiment","pas du tout","jamais"]):
-        return "non"
-    if any(w in t for w in ["bonjour","salut","hello","bonsoir"]):
-        return "hello"
-    if any(w in t for w in ["hmm","interessant","voyons","je pense","curieux"]):
-        return "think"
+    for kw, gesture in _GESTURE_WORDS.items():
+        if kw in t:
+            return gesture
     return None
 
 def _handle_voice(text):
