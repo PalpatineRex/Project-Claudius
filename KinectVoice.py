@@ -41,10 +41,10 @@ SAMPLE_RATE     = 16000
 CHUNK_DURATION  = 0.1
 CHUNK_SAMPLES   = int(SAMPLE_RATE * CHUNK_DURATION)
 
-SILENCE_AFTER   = 1.5
-MIN_DURATION    = 0.8
+SILENCE_AFTER   = 0.8
+MIN_DURATION    = 0.5
 MAX_DURATION    = 8.0
-FIXED_THRESHOLD = 1000
+FIXED_THRESHOLD = 500
 MODEL_SIZE      = "small"
 
 # Chemins portables : relatifs au script, overridables par env
@@ -54,6 +54,7 @@ LOG_FILE        = os.path.join(BASE_DIR, "kinect.log")
 TRANSCRIPT_FILE = os.path.join(BASE_DIR, "transcript.txt")
 TTS_LOCK_FILE   = os.path.join(BASE_DIR, "tts_speaking.lock")
 SLEEP_FILE      = os.path.join(BASE_DIR, "claudius_sleep.lock")
+HEARTBEAT_FILE  = os.path.join(BASE_DIR, "voice_heartbeat.txt")
 PID_FILE        = os.path.join(BASE_DIR, "voice.pid")
 # Micro : index du device (overridable par env, -1 = default systeme)
 BIRD_DEVICE_ID  = int(os.environ.get("CLAUDIUS_MIC_DEVICE", "1"))
@@ -94,6 +95,16 @@ HALLUCINATION_KEYWORDS = [
 # Queue unique pour serialiser les transcriptions
 _transcribe_queue = queue.Queue(maxsize=3)
 _send_lock = threading.Lock()
+
+# --- Heartbeat : ecrit un timestamp toutes les 10s pour le watchdog ---
+def _heartbeat_loop():
+    while True:
+        try:
+            with open(HEARTBEAT_FILE, "w") as f:
+                f.write(str(time.time()))
+        except Exception:
+            pass
+        time.sleep(10)
 
 def _log(msg):
     line = f"[VOICE {time.strftime('%H:%M:%S')}] {msg}"
@@ -146,6 +157,7 @@ def transcribe(frames, model):
         no_speech_threshold=0.4,
         log_prob_threshold=-0.5,
         compression_ratio_threshold=2.4,
+        initial_prompt="Claudius, bonjour. Claudius, comment ça va ?",
     )
     seg_list = list(segments)
     text = " ".join(s.text for s in seg_list).strip()
@@ -156,10 +168,76 @@ def transcribe(frames, model):
         avg_lp = -999.0
     return text, avg_lp
 
+# --- Filtre mot-cle "Claudius" ---
+# Match fuzzy : cherche "claudius" ou variantes n'importe ou dans la phrase
+_WAKE_EXACT = {"claudius", "clodius", "clodious", "klodius", "cloudius", "clodeus",
+               "cladius", "clodias", "clodis", "klaudius", "lodius", "laudice",
+               "clodice", "clodisse", "claude", "clodice", "laudis", "lodice"}
+# Noyaux phonetiques — si un mot les contient, c'est probablement "Claudius"
+_WAKE_CORES = ("claud", "clod", "klod", "klaud", "laudic", "lodic", "lodiu", "audiu", "audic", "audi")
+
+def _contains_wake_word(text):
+    """Cherche le mot-cle Claudius n'importe ou dans la phrase.
+    Retourne (True, texte_nettoyé) ou (False, text_original).
+    Retire le mot-cle et tout ce qui est avant."""
+    t = text.strip()
+    if not t:
+        return False, t
+    words = t.split()
+    for i, w in enumerate(words):
+        wl = w.lower().strip(".,!?;:'\"")
+        # Check exact
+        if wl in _WAKE_EXACT:
+            # Garder tout apres le mot-cle
+            rest = " ".join(words[i+1:]).strip(" ,.:!?")
+            return True, rest
+        # Check noyau phonetique
+        for core in _WAKE_CORES:
+            if core in wl:
+                rest = " ".join(words[i+1:]).strip(" ,.:!?")
+                return True, rest
+        # Check apostrophe split (ex: "l'audice")
+        if "'" in wl:
+            parts = wl.split("'")
+            for p in parts:
+                if p in _WAKE_EXACT:
+                    rest = " ".join(words[i+1:]).strip(" ,.:!?")
+                    return True, rest
+                for core in _WAKE_CORES:
+                    if core in p:
+                        rest = " ".join(words[i+1:]).strip(" ,.:!?")
+                        return True, rest
+    return False, t
+
 def send_voice(text):
-    """Envoie le texte transcrit dans cmd.txt si pas hallucination."""
+    """Envoie le texte transcrit dans cmd.txt si contient 'Claudius'."""
     if is_hallucination(text):
         return
+    # Filtre mot-cle : la phrase doit contenir "Claudius" quelque part
+    has_wake, clean_text = _contains_wake_word(text)
+    if not has_wake:
+        _log(f"Pas de mot-cle: {repr(text[:60])}")
+        return
+    if not clean_text:
+        # Juste le mot-cle (ex: "Bonjour Claudius") — envoyer "bonjour" comme contenu
+        has_wake2, _ = _contains_wake_word(text)
+        # Recup le texte avant le mot-cle comme contenu
+        t = text.strip()
+        words = t.split()
+        for i, w in enumerate(words):
+            wl = w.lower().strip(".,!?;:'\"")
+            if wl in _WAKE_EXACT or any(c in wl for c in _WAKE_CORES):
+                before = " ".join(words[:i]).strip(" ,.:!?")
+                if before:
+                    text = before
+                    break
+                else:
+                    text = "bonjour"
+                    break
+                break
+        else:
+            text = "bonjour"
+    text = clean_text
     if os.path.exists(SLEEP_FILE):
         _log("Veille — ignore"); return
     if os.path.exists(TTS_LOCK_FILE):
@@ -300,6 +378,9 @@ if __name__ == "__main__":
 
     # Thread detection audio systeme (mute quand video/musique)
     threading.Thread(target=_audio_monitor, daemon=True).start()
+
+    # Thread heartbeat pour le watchdog Bridge
+    threading.Thread(target=_heartbeat_loop, daemon=True).start()
 
     with sd.InputStream(device=BIRD_DEVICE_ID, samplerate=SAMPLE_RATE,
                         channels=1, dtype="int16", blocksize=CHUNK_SAMPLES) as stream:

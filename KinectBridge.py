@@ -56,6 +56,9 @@ if not ANTHROPIC_API_KEY:
     ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip().strip('"').strip("'")
 ANTHROPIC_MODEL   = "claude-haiku-4-5-20251001"
 BRIDGE_PID_FILE   = os.path.join(_DATA_DIR, "bridge.pid")
+VOICE_PID_FILE    = os.path.join(_DATA_DIR, "voice.pid")
+VOICE_HEARTBEAT   = os.path.join(_DATA_DIR, "voice_heartbeat.txt")
+VOICE_SCRIPT      = os.path.join(_KINECT_DIR, "KinectVoice.py")
 
 # --- Singleton Bridge ---
 def _enforce_singleton():
@@ -663,6 +666,138 @@ def watch_cmd():
             _priority_evt.clear()
         time.sleep(0.3)
 
+# --- Watchdog Voice ---
+
+_WATCHDOG_INTERVAL = 30    # secondes entre chaque check
+_HEARTBEAT_TIMEOUT = 90    # secondes sans heartbeat = Voice figé
+_RESTART_COOLDOWN  = 60    # secondes minimum entre deux relances
+_MAX_RESTARTS      = 5     # max relances avant abandon (reset au bout de 10 min OK)
+_RESTART_RESET     = 600   # secondes de fonctionnement OK pour reset le compteur
+
+def _is_pid_alive(pid):
+    """Verifie si un PID Windows existe encore."""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    except Exception:
+        return False
+
+def _kill_pid(pid):
+    """Tue un process Windows par PID."""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(1, False, pid)  # PROCESS_TERMINATE
+        if handle:
+            kernel32.TerminateProcess(handle, 0)
+            kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+def _launch_voice():
+    """Lance KinectVoice.py en background."""
+    try:
+        subprocess.Popen(
+            [PYTHON.replace("python.exe", "pythonw.exe"), VOICE_SCRIPT],
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+            cwd=_KINECT_DIR
+        )
+        _log("WATCHDOG: Voice relance")
+        return True
+    except Exception as e:
+        _log(f"WATCHDOG ERR: impossible de lancer Voice: {e}")
+        return False
+
+def _watchdog_voice():
+    """Thread watchdog — surveille Voice via PID + heartbeat, relance si mort/fige."""
+    restart_count = 0
+    last_restart = 0.0
+    last_ok_time = time.time()
+
+    # Attendre que Voice ait eu le temps de demarrer
+    time.sleep(15)
+    _log("WATCHDOG: actif — surveillance Voice")
+
+    while True:
+        time.sleep(_WATCHDOG_INTERVAL)
+        now = time.time()
+
+        # Reset compteur si Voice tourne bien depuis longtemps
+        if now - last_ok_time > _RESTART_RESET and restart_count > 0:
+            _log(f"WATCHDOG: Voice stable depuis {_RESTART_RESET}s — reset compteur ({restart_count}->0)")
+            restart_count = 0
+
+        # Max restarts atteint?
+        if restart_count >= _MAX_RESTARTS:
+            _log(f"WATCHDOG: {_MAX_RESTARTS} relances — abandon (check manuellement)")
+            # Attend le reset timeout avant de reessayer
+            if now - last_ok_time < _RESTART_RESET:
+                continue
+            else:
+                restart_count = 0
+                _log("WATCHDOG: reset apres timeout — reprend surveillance")
+
+        need_restart = False
+        reason = ""
+
+        # Check 1 : PID vivant?
+        voice_pid = None
+        try:
+            if os.path.exists(VOICE_PID_FILE):
+                voice_pid = int(open(VOICE_PID_FILE).read().strip())
+        except (ValueError, OSError):
+            pass
+
+        if voice_pid is None:
+            need_restart = True
+            reason = "PID file absent"
+        elif not _is_pid_alive(voice_pid):
+            need_restart = True
+            reason = f"PID {voice_pid} mort"
+        else:
+            # Check 2 : heartbeat recent?
+            try:
+                if os.path.exists(VOICE_HEARTBEAT):
+                    hb_time = float(open(VOICE_HEARTBEAT).read().strip())
+                    age = now - hb_time
+                    if age > _HEARTBEAT_TIMEOUT:
+                        need_restart = True
+                        reason = f"heartbeat stale ({age:.0f}s)"
+                        # Tuer le process fige
+                        _kill_pid(voice_pid)
+                        time.sleep(1)
+                else:
+                    # Pas de heartbeat file — Voice trop ancien ou n'a pas encore ecrit
+                    # On ne relance pas pour ca, juste un warning
+                    pass
+            except (ValueError, OSError):
+                pass
+
+        if need_restart:
+            # Cooldown entre relances
+            if now - last_restart < _RESTART_COOLDOWN:
+                continue
+            _log(f"WATCHDOG: Voice down — {reason}")
+            # Nettoyer les fichiers residuels
+            for f in [VOICE_PID_FILE, VOICE_HEARTBEAT, TTS_LOCK_FILE]:
+                try:
+                    if os.path.exists(f): os.remove(f)
+                except Exception: pass
+            if _launch_voice():
+                restart_count += 1
+                last_restart = now
+                _log(f"WATCHDOG: relance #{restart_count}/{_MAX_RESTARTS}")
+                # Attendre que Voice demarre
+                time.sleep(10)
+        else:
+            last_ok_time = now
+
 # --- Entrypoint ---
 
 if __name__ == "__main__":
@@ -683,6 +818,7 @@ if __name__ == "__main__":
     threading.Thread(target=watch_cmd, daemon=True).start()
     threading.Thread(target=_auto_blink, daemon=True).start()
     threading.Thread(target=_load_piper_bg, daemon=True).start()
-    _log("KinectBridge pret.")
+    threading.Thread(target=_watchdog_voice, daemon=True).start()
+    _log("KinectBridge pret. (watchdog Voice actif)")
     while True:
         time.sleep(60)
