@@ -22,14 +22,16 @@ PIPELINE VOIX (ton architecture):
 - Logs: rotation 500 lignes
 
 DERNIERE SESSION (28 mars 2026):
-- Watchdog Voice deploye dans Bridge: thread surveillance toutes les 30s (PID alive + heartbeat <90s), relance auto Voice si crash/freeze, cooldown 60s entre relances, max 5 relances, reset compteur apres 10min stable. Teste OK.
-- Wake word "Claudius" deploye dans Voice: initial_prompt Whisper, fuzzy match noyaux phonetiques partout dans la phrase, support prefixe (Hey/Oui/Salut Claudius). Teste OK.
-- Heartbeat Voice: ecrit voice_heartbeat.txt toutes les 10s pour le watchdog.
-- Latence reduite: SILENCE_AFTER 1.5->0.8s, MIN_DURATION 0.8->0.5s, FIXED_THRESHOLD 1000->500.
-- GitHub: pushe v3.2, commit 859736a sur PalpatineRex/Project-Claudius main
+- Detection presence Kinect depth deployee: KinectMotor.exe transforme en daemon continu (mode "presence"). Depth stream 320x240 analyse toutes les 500ms, compte pixels dans zone configurable (presence_config.txt: min_mm, max_mm, pixel_threshold, scan_ms, cooldown_s). Ecrit presence.txt (PRESENT/ABSENT + timestamp + pixels). Gestes via motor_cmd.txt au lieu de lancer l'exe a chaque fois. Mode legacy (one-shot) preserve pour compatibilite.
+- Presence watcher dans Bridge: thread qui lit presence.txt, declenche hello + greeting TTS quand quelqu'un arrive. Cooldown 120s entre greetings. 5 phrases aleatoires.
+- Bridge lance le daemon Motor au demarrage (_launch_motor_daemon), detecte automatiquement si daemon actif (motor_daemon_mode).
+- Watchdog Voice toujours actif dans Bridge.
+- Wake word Claudius toujours actif dans Voice.
+- Compile: csc.exe /platform:x86 /r:"C:\Program Files\Microsoft SDKs\Kinect\v1.8\Assemblies\Microsoft.Kinect.dll" /r:System.Drawing.dll
+- GitHub: a committer v3.3
 
 PROJETS EN COURS DE DAVID:
-- Project Claudius (ce projet): tete animatronique Kinect Xbox 360, pipeline voix v3.2 complet. Watchdog Voice OK, wake word Claudius OK, blend spectral v3d OK, CUDA GPU OK. Prochaine etape: detection mouvement/presence Kinect depth. GitHub: github.com/PalpatineRex/Project-Claudius
+- Project Claudius (ce projet): tete animatronique Kinect Xbox 360, pipeline voix v3.3 complet. Detection presence Kinect depth (daemon C# continu, configurable). Watchdog Voice OK, wake word Claudius OK, blend spectral v3d OK, CUDA GPU OK. Prochaine etape: vision snap auto → LLM vision. GitHub: github.com/PalpatineRex/Project-Claudius
 - From The Deep: jeu video platformer Ghouls'n Ghosts (WW2 + Cosmic Horror), Godot 4.6. Systeme armure GnG (2 hits), double saut flottant, tir 8 directions, 3 vies, HUD. TODO: sprites WW2, projectile inspector, tests.
 - Capcom Pad BT: manette Mega Drive 6 boutons en Bluetooth. ESP32-C3 valide en BLE, ESP32-WROOM-32 commande pour BT Classic. Protocole MD J1 OK (40us timing). LiPo + TP4056 pret. Futur: NES Advantage et SN Programpad BT.
 - Sega Mega Drive dev: nouveau projet jeu retro en C avec SGDK 2.11, Aseprite, Tiled/LDTK, Deflemask/Furnace.

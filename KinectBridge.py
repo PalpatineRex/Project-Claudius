@@ -38,6 +38,8 @@ PIPER_MODEL2     = os.path.join(_KINECT_DIR, "piper", "siwis", "fr_FR-siwis-medi
 PIPER_MODEL2_JSON= os.path.join(_KINECT_DIR, "piper", "siwis", "fr_FR-siwis-medium.onnx.json")
 BLEND_RATIO      = 0.5  # 0.0=Jessica pure, 1.0=SIWIS pure
 CONTEXT_FILE     = os.path.join(_DATA_DIR, "claudius_context.txt")
+MOTOR_CMD_FILE   = os.path.join(_DATA_DIR, "motor_cmd.txt")
+PRESENCE_FILE    = os.path.join(_DATA_DIR, "presence.txt")
 LOG_MAX_LINES    = 2000
 _log_count       = 0
 
@@ -84,7 +86,7 @@ def _enforce_singleton():
 
 # Nettoyage fichiers residuels au boot — appele dans __main__ apres singleton
 def _cleanup_boot():
-    for _f in (SLEEP_FILE, TTS_LOCK_FILE, CMD_FILE):
+    for _f in (SLEEP_FILE, TTS_LOCK_FILE, CMD_FILE, MOTOR_CMD_FILE):
         try:
             if os.path.exists(_f): os.remove(_f)
         except Exception: pass
@@ -127,17 +129,43 @@ def _log(msg):
 
 # --- Moteur Kinect ---
 
+_motor_daemon_mode = False  # set True when daemon is detected
+
 def _run(cmd):
     with _motor_lock:
-        try:
-            subprocess.call([MOTOR_EXE, cmd], creationflags=subprocess.CREATE_NO_WINDOW)
-            _log("OK:" + cmd)
-        except Exception as e:
-            _log("ERR _run " + cmd + ": " + str(e))
+        if _motor_daemon_mode:
+            # Daemon mode: write command to motor_cmd.txt
+            try:
+                with open(MOTOR_CMD_FILE, "w") as f:
+                    f.write(cmd)
+                _log("CMD>" + cmd)
+            except Exception as e:
+                _log("ERR _run cmd write: " + str(e))
+        else:
+            # Legacy: launch KinectMotor.exe directly
+            try:
+                subprocess.call([MOTOR_EXE, cmd], creationflags=subprocess.CREATE_NO_WINDOW)
+                _log("OK:" + cmd)
+            except Exception as e:
+                _log("ERR _run " + cmd + ": " + str(e))
 
 def _run_snap():
     _log("snap: debut")
     with _motor_lock:
+        if _motor_daemon_mode:
+            # Daemon mode: write snap command, wait for result in stdout of daemon
+            # The daemon handles snap internally — we just trigger it
+            try:
+                with open(MOTOR_CMD_FILE, "w") as f:
+                    f.write("snap")
+                _log("snap: commande envoyee au daemon")
+                # Wait a bit for the daemon to process (snap takes ~3-5s with warm-up)
+                time.sleep(5)
+                return "OK:snap_via_daemon"
+            except Exception as e:
+                _log("ERR snap cmd: " + str(e))
+                return None
+        # Legacy mode
         for attempt in range(3):
             try:
                 result = subprocess.check_output(
@@ -798,6 +826,133 @@ def _watchdog_voice():
         else:
             last_ok_time = now
 
+# --- Presence watcher ---
+
+_PRESENCE_GREETINGS_FIRST = {
+    "morning": ["Bonjour David !", "Bonjour !"],
+    "afternoon": ["Bonjour David !", "Bon apres-midi !"],
+    "evening": ["Bonsoir David !", "Bonsoir !"],
+}
+_PRESENCE_GREETINGS_RETURN = [
+    "Re !",
+    "Bon retour !",
+    "Ah, te revoila !",
+    "De retour sur ta chaise ?",
+]
+_PRESENCE_CHECK_INTERVAL = 2  # seconds between file checks
+_PRESENCE_GREETING_COOLDOWN = 3600  # 1h entre greetings (pas de spam)
+_PRESENCE_MIN_ABSENCE = 300  # 5 min d'absence minimum pour re-saluer
+_PRESENCE_FIRST_DONE = False  # premier greeting de la session = bonjour/bonsoir
+
+def _read_presence():
+    """Lit presence.txt -> (state, timestamp_str, pixel_count) ou None."""
+    try:
+        if not os.path.exists(PRESENCE_FILE):
+            return None
+        with open(PRESENCE_FILE, "r") as f:
+            lines = f.read().strip().split("\n")
+        if len(lines) < 2:
+            return None
+        return lines[0].strip(), lines[1].strip(), int(lines[2]) if len(lines) > 2 else 0
+    except Exception:
+        return None
+
+def _presence_watcher():
+    """Thread qui surveille presence.txt et declenche un greeting quand quelqu'un arrive."""
+    global _PRESENCE_FIRST_DONE
+    last_greeting_time = 0.0
+    was_present = False
+    absence_start = 0.0  # quand l'absence a commence
+    _log("PRESENCE: watcher actif")
+
+    # Attendre que Piper soit pret avant de saluer
+    _piper_ready.wait(timeout=30)
+    time.sleep(2)  # laisser le systeme se stabiliser
+
+    while True:
+        time.sleep(_PRESENCE_CHECK_INTERVAL)
+
+        # Don't greet if sleeping or speaking
+        if _sleeping.is_set() or _speaking.is_set():
+            continue
+
+        state = _read_presence()
+        if state is None:
+            was_present = False
+            continue
+
+        present = (state[0] == "PRESENT")
+
+        # Track absence duration
+        if not present and was_present:
+            absence_start = time.time()
+        
+        if present and not was_present:
+            now = time.time()
+            absence_duration = now - absence_start if absence_start > 0 else 9999
+            cooldown_ok = (now - last_greeting_time >= _PRESENCE_GREETING_COOLDOWN)
+            absence_ok = (absence_duration >= _PRESENCE_MIN_ABSENCE)
+
+            if cooldown_ok and absence_ok:
+                _log(f"PRESENCE: detection! ({state[2]} pixels, absent {absence_duration:.0f}s)")
+                last_greeting_time = now
+
+                # Premier greeting = bonjour/bonsoir, ensuite = retour
+                if not _PRESENCE_FIRST_DONE:
+                    hour = int(time.strftime("%H"))
+                    if hour < 12:
+                        greeting = random.choice(_PRESENCE_GREETINGS_FIRST["morning"])
+                    elif hour < 18:
+                        greeting = random.choice(_PRESENCE_GREETINGS_FIRST["afternoon"])
+                    else:
+                        greeting = random.choice(_PRESENCE_GREETINGS_FIRST["evening"])
+                    _PRESENCE_FIRST_DONE = True
+                else:
+                    greeting = random.choice(_PRESENCE_GREETINGS_RETURN)
+
+                _priority_evt.set()
+                try:
+                    threading.Thread(target=_run, args=("hello",), daemon=True).start()
+                    _tts_wait(greeting)
+                    try:
+                        with open(TRANSCRIPT_FILE, "a", encoding="utf-8") as _tf:
+                            _tf.write(f"[{time.strftime('%H:%M:%S')}] Claudius: {greeting}\n")
+                    except Exception:
+                        pass
+                finally:
+                    _priority_evt.clear()
+            elif not cooldown_ok:
+                _log(f"PRESENCE: cooldown ({_PRESENCE_GREETING_COOLDOWN}s)")
+            elif not absence_ok:
+                _log(f"PRESENCE: absence trop courte ({absence_duration:.0f}s < {_PRESENCE_MIN_ABSENCE}s)")
+
+        was_present = present
+
+# --- Motor daemon launcher ---
+
+def _launch_motor_daemon():
+    """Lance KinectMotor.exe en mode daemon (presence) si disponible."""
+    global _motor_daemon_mode
+    if not os.path.exists(MOTOR_EXE):
+        _log("MOTOR: exe introuvable — mode legacy")
+        return
+    try:
+        # Test: run with 'presence' arg — if it supports it, it stays alive
+        proc = subprocess.Popen(
+            [MOTOR_EXE, "presence"],
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+            cwd=_KINECT_DIR
+        )
+        time.sleep(3)  # let it start
+        if proc.poll() is None:
+            # Still running = daemon mode works
+            _motor_daemon_mode = True
+            _log(f"MOTOR: daemon lance (PID {proc.pid}) — presence + gestes via motor_cmd.txt")
+        else:
+            _log("MOTOR: daemon exit rapide — mode legacy (KinectMotor.exe trop ancien?)")
+    except Exception as e:
+        _log(f"MOTOR: ERR lancement daemon: {e} — mode legacy")
+
 # --- Entrypoint ---
 
 if __name__ == "__main__":
@@ -815,10 +970,12 @@ if __name__ == "__main__":
     if not ANTHROPIC_API_KEY:
         _log("ERREUR: cle API absente (C:\\Kinect\\api_key.txt)")
     _log("=== KinectBridge demarrage (Claude Haiku) ===")
+    _launch_motor_daemon()
     threading.Thread(target=watch_cmd, daemon=True).start()
     threading.Thread(target=_auto_blink, daemon=True).start()
     threading.Thread(target=_load_piper_bg, daemon=True).start()
     threading.Thread(target=_watchdog_voice, daemon=True).start()
-    _log("KinectBridge pret. (watchdog Voice actif)")
+    threading.Thread(target=_presence_watcher, daemon=True).start()
+    _log("KinectBridge pret. (watchdog Voice + presence actifs)")
     while True:
         time.sleep(60)
