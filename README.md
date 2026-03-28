@@ -12,6 +12,8 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 ## 🎯 Fonctionnalités
 
 - **Reconnaissance vocale** — faster-whisper small CUDA float16, VAD adaptatif, ~0.5s
+- **Wake word "Claudius"** — Fuzzy match phonétique (supporte "Hey Claudius", "Salut Claudius", etc.), initial_prompt Whisper
+- **Watchdog Voice** — Bridge surveille Voice (PID + heartbeat), relance auto si crash/freeze
 - **Intelligence conversationnelle** — Claude Haiku API, mémoire 6 échanges, contexte enrichi dynamique
 - **Synthèse vocale blend** — Piper TTS Jessica+SIWIS, blend spectral DTW (phase Jessica, magnitudes mixées, consonnes préservées), ~1.1s total
 - **Re-accentuation FR** — Correction automatique des accents manquants avant TTS (clavier QWERTY-friendly)
@@ -30,7 +32,7 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                      CLAUDIUS v3                                 │
+│                      CLAUDIUS v3.2                               │
 ├───────────────┬──────────────┬───────────────────┬───────────────┤
 │  KinectVoice  │ KinectBridge │ Piper TTS Blend   │ KinectMotor   │
 │  (Oreilles)   │  (Cerveau)   │    (Bouche)       │   (Corps)     │
@@ -51,14 +53,17 @@ Micro Bird UM1
     │
     ▼
 KinectVoice.py
-    ├─ VAD adaptatif : max(1000, ambiant × 1.5)
-    ├─ faster-whisper small FR (CUDA float16, ~0.5s)
+    ├─ Wake word "Claudius" (fuzzy match phonétique)
+    ├─ VAD adaptatif : max(500, ambiant × 1.5)
+    ├─ faster-whisper small FR (CUDA float16, initial_prompt, ~0.5s)
     ├─ Filtre hallucinations (logprob + keywords + 2 mots min)
     ├─ Audio monitor pycaw (mute auto si media joue)
+    ├─ Heartbeat toutes les 10s (pour watchdog)
     └─ Écrit VOICE:texte → cmd.txt
                 │
                 ▼
          KinectBridge.py
+                ├─ Watchdog Voice (PID + heartbeat, relance auto)
                 ├─ think (geste Kinect immédiat)
                 ├─ Claude Haiku API (~1-2s, contexte enrichi)
                 ├─ Geste selon réponse [thread parallèle]
@@ -78,7 +83,7 @@ KinectVoice.py
                         sounddevice → Haut-parleurs (RAM, zéro fichier)
 ```
 
-**Latence totale** : ~2.5-3.5s de fin de parole à début de réponse.
+**Latence totale** : ~2-3s de fin de parole à début de réponse.
 
 ---
 
@@ -108,8 +113,8 @@ Le système de voix utilise deux modèles Piper TTS (Jessica et SIWIS) fusionné
 
 ```
 Project-Claudius/
-├── KinectBridge.py      — Cerveau : watcher, API Haiku, TTS blend, re-accent, auto-blink
-├── KinectVoice.py       — Oreilles : VAD adaptatif + faster-whisper CUDA + filtres
+├── KinectBridge.py      — Cerveau : watcher, API Haiku, TTS blend, re-accent, auto-blink, watchdog Voice
+├── KinectVoice.py       — Oreilles : wake word + VAD adaptatif + faster-whisper CUDA + filtres + heartbeat
 ├── KinectTTS.py         — Bouche standalone : Piper / pyttsx3 / edge-tts (fallback)
 ├── KinectMotor.cs       — Corps : C# SDK Kinect 1.8, moteur tilt + snap RGB
 ├── KinectTranscript.py  — Serveur Flask transcript temps réel (localhost:5005)
@@ -203,7 +208,7 @@ python KinectTranscript.py &
 | Appel API Claude Haiku | ~1-2s |
 | Synthèse Piper dual (Jessica+SIWIS parallèle) | ~1.0s |
 | Blend spectral v3d | ~0.1s |
-| **Latence totale** (fin parole → début réponse) | **~2.5-3.5s** |
+| **Latence totale** (fin parole → début réponse) | **~2-3s** |
 
 | Ressource | Usage |
 |-----------|-------|
@@ -217,7 +222,8 @@ python KinectTranscript.py &
 
 | Version | Date | Changements |
 |---------|------|-------------|
-| **v3.0** | **2026-03-19** | **Blend spectral v3d** : DTW cosine mel features, warp continu, STFT vectorisée, phase Jessica + magnitudes mixées, gate silence, HF preserve consonnes, détecteur transitoires, conservation énergie. Re-accentuation FR. sounddevice cross-platform. scipy importé au boot. Volume normalisé 31000. |
+| **v3.2** | **2026-03-28** | **Watchdog Voice** : thread Bridge surveille Voice (PID + heartbeat 10s), relance auto si crash/freeze, cooldown 60s, max 5 relances, reset 10min. **Wake word "Claudius"** : initial_prompt Whisper, fuzzy match phonétique partout dans la phrase (noyaux claud/clod/audic), support préfixe (Hey/Oui/Salut Claudius). **Latence réduite** : SILENCE_AFTER 1.5→0.8s, MIN_DURATION 0.8→0.5s, seuil micro 1000→500. |
+| v3.0 | 2026-03-19 | **Blend spectral v3d** : DTW cosine mel features, warp continu, STFT vectorisée, phase Jessica + magnitudes mixées, gate silence, HF preserve consonnes, détecteur transitoires, conservation énergie. Re-accentuation FR. sounddevice cross-platform. scipy importé au boot. Volume normalisé 31000. |
 | v2.5 | 2026-03-18 | Chemins portables (env vars CLAUDIUS_*), clé API fichier>env strip guillemets, CUDA auto-detect site.getsitepackages(), VAD adaptatif, pycaw audio monitor mute auto, system prompt cache mtime, log rotation 500. Premier blend Jessica+SIWIS (scipy.resample + spectral subtraction). |
 | v2.0 | 2026-03-18 | faster-whisper small CUDA float16, singleton PID, queue anti-flood, triple filtre hallucination, contexte enrichi dynamique |
 | v1.5 | 2026-03-12 | Migration Ollama → API Claude Haiku, Piper TTS Jessica GPU |
@@ -228,7 +234,8 @@ python KinectTranscript.py &
 
 ## 🗺️ Roadmap
 
-- [ ] Watchdog Voice crash quand Bridge est relancé
+- [x] Watchdog Voice crash quand Bridge est relancé
+- [x] Wake word "Claudius" avec fuzzy match
 - [ ] Détection de présence (skeleton tracking / depth)
 - [ ] Vision — snap auto → LLM vision
 - [ ] Interface web dashboard
