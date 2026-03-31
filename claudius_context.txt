@@ -21,14 +21,18 @@ PIPELINE VOIX (ton architecture):
 - System prompt: cache par mtime du fichier contexte
 - Logs: rotation 500 lignes
 
-DERNIERE SESSION (28 mars 2026):
-- Detection presence Kinect depth deployee: KinectMotor.exe transforme en daemon continu (mode "presence"). Depth stream 320x240 analyse toutes les 500ms, compte pixels dans zone configurable (presence_config.txt: min_mm, max_mm, pixel_threshold, scan_ms, cooldown_s). Ecrit presence.txt (PRESENT/ABSENT + timestamp + pixels). Gestes via motor_cmd.txt au lieu de lancer l'exe a chaque fois. Mode legacy (one-shot) preserve pour compatibilite.
-- Presence watcher dans Bridge: thread qui lit presence.txt, declenche hello + greeting TTS quand quelqu'un arrive. Cooldown 120s entre greetings. 5 phrases aleatoires.
-- Bridge lance le daemon Motor au demarrage (_launch_motor_daemon), detecte automatiquement si daemon actif (motor_daemon_mode).
-- Watchdog Voice toujours actif dans Bridge.
-- Wake word Claudius toujours actif dans Voice.
+DERNIERE SESSION (31 mars 2026):
+- Ch5 Vision snap via commande vocale deploye et fonctionnel.
+- Pipeline vision: mot-cle vocal ("regarde", "tu vois", "c'est quoi"...) → _is_vision_request() detecte dans Bridge → trigger snap via motor_cmd.txt → attente snap frais <10s → appel Haiku multimodal unique (image base64 PNG + transcription user + system prompt enrichi vision, max_tokens 150, timeout 20s) → reponse TTS + injection historique conversation.
+- Snap: KinectMotor.exe daemon sauvegarde dans le repertoire Kinect (snapDir passe en arg au daemon via Bridge). Format KinectSnap-DATE.png 640x480.
+- System prompt vision: "[VISION] Tu vois une image de ta camera Kinect. Ne decris PAS ce que tu vois sauf si David te le demande explicitement. Utilise l'image pour COMPRENDRE le contexte et repondre naturellement."
+- Watchdog Motor ajoute dans Bridge: thread _watchdog_motor() surveille le daemon Motor toutes les 15s, relance automatiquement si crash (max 10 relances). _cleanup_boot() tue les Motor residuels au demarrage.
+- audio_ignore.txt: fichier configurable (1 process par ligne) pour exclure des apps du mute audio (opera.exe, comet.exe). Charge au boot de Voice en plus du hardcode.
+- Calibration Voice amelioree: attend que l'audio systeme soit inactif avant calibration (max 30s), securite seuil max 3000 (force a FIXED_THRESHOLD si depasse), audio_monitor lance AVANT calibration.
+- restart_all.py: script clean kill + relaunch (kill Motor/Bridge/Voice, clean locks, relaunch Bridge).
+- deploy.py: shutil.copy2 Bridge+Voice vers C:\Kinect.
 - Compile: csc.exe /platform:x86 /r:"C:\Program Files\Microsoft SDKs\Kinect\v1.8\Assemblies\Microsoft.Kinect.dll" /r:System.Drawing.dll
-- GitHub: a committer v3.3
+- GitHub: v3.3 → a committer ch5
 
 PROJETS EN COURS DE DAVID:
 - Project Claudius (ce projet): tete animatronique Kinect Xbox 360, pipeline voix v3.3 complet. Detection presence Kinect depth (daemon C# continu, configurable). Watchdog Voice OK, wake word Claudius OK, blend spectral v3d OK, CUDA GPU OK. Prochaine etape: vision snap auto → LLM vision. GitHub: github.com/PalpatineRex/Project-Claudius

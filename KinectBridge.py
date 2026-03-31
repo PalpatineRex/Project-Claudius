@@ -10,7 +10,7 @@ Cmds  : oui/non/blink/hello/think/reset/snap/sleep/wake + VOICE:texte
 
 https://github.com/PalpatineRex/Project-Claudius
 """
-import subprocess, os, time, threading, random, json, sys, re
+import subprocess, os, time, threading, random, json, sys, re, base64, glob
 import urllib.request
 import numpy as np
 import sounddevice as sd
@@ -90,6 +90,9 @@ def _cleanup_boot():
         try:
             if os.path.exists(_f): os.remove(_f)
         except Exception: pass
+    # Kill Motor residuel pour liberer le Kinect
+    os.system("taskkill /f /im KinectMotor.exe >nul 2>nul")
+    time.sleep(1)
 
 # --- Etat global ---
 _piper_voice  = None
@@ -507,6 +510,43 @@ def _tts_wait(text):
         try: os.remove(TTS_LOCK_FILE)
         except: pass
 
+# --- Vision : snap recent pour appel multimodal ---
+
+_SNAP_MAX_AGE = 10  # secondes max pour considerer un snap comme "frais"
+
+def _find_recent_snap():
+    """Cherche le snap Kinect le plus recent (< _SNAP_MAX_AGE secondes).
+    Retourne le chemin absolu ou None."""
+    pattern = os.path.join(_KINECT_DIR, "KinectSnap-*.png")
+    snaps = glob.glob(pattern)
+    if not snaps:
+        return None
+    # Le plus recent en premier
+    snaps.sort(key=os.path.getmtime, reverse=True)
+    newest = snaps[0]
+    age = time.time() - os.path.getmtime(newest)
+    if age <= _SNAP_MAX_AGE:
+        _log(f"VISION: snap frais trouve ({os.path.basename(newest)}, {age:.1f}s)")
+        return newest
+    return None
+
+def _encode_image_b64(path):
+    """Encode une image en base64 pour l'API Anthropic."""
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+# --- Mots-cles vision (backup cote Bridge) ---
+_VISION_KEYWORDS = [
+    "regarde", "tu vois", "vois-tu", "c'est quoi", "qu'est-ce que tu vois",
+    "montre", "observe", "qu'est-ce qu'il y a", "devant toi",
+    "camera", "snap",
+]
+
+def _is_vision_request(text):
+    """Detecte si le texte est une demande vision."""
+    t = text.lower()
+    return any(kw in t for kw in _VISION_KEYWORDS)
+
 # --- LLM Claude Haiku via API ---
 
 _SYSTEM_FALLBACK = (
@@ -539,16 +579,46 @@ _conversation_history = []
 _history_lock = threading.Lock()
 MAX_HISTORY = 6  # nb d'echanges (user+assistant) gardes en memoire
 
-def _ask_claude(text):
+def _ask_claude(text, image_path=None):
     global _conversation_history
+    # Construire le contenu du message user
+    if image_path:
+        try:
+            img_b64 = _encode_image_b64(image_path)
+            user_content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": img_b64,
+                    }
+                },
+                {"type": "text", "text": text}
+            ]
+            _log(f"VISION: image attachee ({os.path.basename(image_path)})")
+        except Exception as e:
+            _log(f"ERR vision encode: {e}")
+            user_content = text
+    else:
+        user_content = text
     with _history_lock:
-        _conversation_history.append({"role": "user", "content": text})
+        _conversation_history.append({"role": "user", "content": user_content})
         messages = list(_conversation_history)
+    # System prompt enrichi si vision
+    system = _load_system_prompt()
+    if image_path:
+        system += (
+            "\n\n[VISION] Tu vois une image de ta camera Kinect. "
+            "Ne decris PAS ce que tu vois sauf si David te le demande explicitement. "
+            "Utilise l'image pour COMPRENDRE le contexte et repondre naturellement. "
+            "Par exemple si David te montre un objet, parle de l'objet, pas de la piece."
+        )
     try:
         payload = json.dumps({
             "model": ANTHROPIC_MODEL,
-            "max_tokens": 80,
-            "system": _load_system_prompt(),
+            "max_tokens": 150 if image_path else 80,
+            "system": system,
             "messages": messages
         }).encode("utf-8")
         req = urllib.request.Request(ANTHROPIC_URL, data=payload, method="POST", headers={
@@ -556,7 +626,7 @@ def _ask_claude(text):
             "x-api-key": ANTHROPIC_API_KEY,
             "anthropic-version": "2023-06-01"
         })
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=20 if image_path else 15) as resp:
             reply = json.loads(resp.read().decode())["content"][0]["text"].strip()
         with _history_lock:
             _conversation_history.append({"role": "assistant", "content": reply})
@@ -594,17 +664,31 @@ def _gesture_for(text):
 
 def _handle_voice(text):
     _log("VOICE -> Claude: " + text[:60])
+    # --- Vision : si demande vision, trigger snap et attendre ---
+    snap_path = None
+    if _is_vision_request(text):
+        _log("VISION: demande detectee, trigger snap")
+        _run("snap")
+        # Attendre que le snap soit pris (daemon mode ~2-3s)
+        for _ in range(8):  # max 4s d'attente
+            time.sleep(0.5)
+            snap_path = _find_recent_snap()
+            if snap_path:
+                break
+        if not snap_path:
+            _log("VISION: pas de snap disponible, appel texte seul")
     result_box = [None]
+    _snap = snap_path  # capture pour le thread
     def _query():
         try:
-            result_box[0] = _ask_claude(text)
+            result_box[0] = _ask_claude(text, image_path=_snap)
         except Exception as e:
             _log("ERR _query: " + str(e))
     t = threading.Thread(target=_query, daemon=True)
     t.start()
     # Think en parallele (non bloquant pour le thread principal)
     threading.Thread(target=_run, args=("think",), daemon=True).start()
-    t.join(timeout=20)
+    t.join(timeout=25 if snap_path else 20)
     reply = result_box[0] or "Desole, je suis hors ligne."
     _log("VOICE reply: " + reply[:80])
     # Transcript temps reel
@@ -930,28 +1014,67 @@ def _presence_watcher():
 
 # --- Motor daemon launcher ---
 
+_motor_daemon_proc = None  # ref au process daemon
+
 def _launch_motor_daemon():
     """Lance KinectMotor.exe en mode daemon (presence) si disponible."""
-    global _motor_daemon_mode
+    global _motor_daemon_mode, _motor_daemon_proc
     if not os.path.exists(MOTOR_EXE):
         _log("MOTOR: exe introuvable — mode legacy")
-        return
+        return False
+    # Kill tout Motor residuel avant de lancer
     try:
-        # Test: run with 'presence' arg — if it supports it, it stays alive
+        import ctypes
+        os.system("taskkill /f /im KinectMotor.exe >nul 2>nul")
+        time.sleep(1)
+    except Exception:
+        pass
+    try:
         proc = subprocess.Popen(
-            [MOTOR_EXE, "presence"],
+            [MOTOR_EXE, "presence", _KINECT_DIR],
             creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
             cwd=_KINECT_DIR
         )
         time.sleep(3)  # let it start
         if proc.poll() is None:
-            # Still running = daemon mode works
             _motor_daemon_mode = True
+            _motor_daemon_proc = proc
             _log(f"MOTOR: daemon lance (PID {proc.pid}) — presence + gestes via motor_cmd.txt")
+            return True
         else:
-            _log("MOTOR: daemon exit rapide — mode legacy (KinectMotor.exe trop ancien?)")
+            _log("MOTOR: daemon exit rapide — mode legacy")
+            return False
     except Exception as e:
         _log(f"MOTOR: ERR lancement daemon: {e} — mode legacy")
+        return False
+
+def _watchdog_motor():
+    """Thread watchdog Motor — relance le daemon s'il meurt."""
+    global _motor_daemon_mode, _motor_daemon_proc
+    time.sleep(10)  # laisser le daemon demarrer
+    _log("WATCHDOG MOTOR: actif")
+    restart_count = 0
+    max_restarts = 10
+    while True:
+        time.sleep(15)
+        if not _motor_daemon_mode:
+            continue  # legacy mode, pas de watchdog
+        if _motor_daemon_proc is None:
+            continue
+        if _motor_daemon_proc.poll() is not None:
+            # Daemon mort
+            _log(f"WATCHDOG MOTOR: daemon mort (exit code {_motor_daemon_proc.returncode})")
+            if restart_count >= max_restarts:
+                _log("WATCHDOG MOTOR: trop de relances — abandon")
+                _motor_daemon_mode = False
+                continue
+            time.sleep(3)
+            if _launch_motor_daemon():
+                restart_count += 1
+                _log(f"WATCHDOG MOTOR: relance #{restart_count}/{max_restarts}")
+            else:
+                _motor_daemon_mode = False
+                _log("WATCHDOG MOTOR: echec relance — mode legacy")
 
 # --- Entrypoint ---
 
@@ -975,6 +1098,7 @@ if __name__ == "__main__":
     threading.Thread(target=_auto_blink, daemon=True).start()
     threading.Thread(target=_load_piper_bg, daemon=True).start()
     threading.Thread(target=_watchdog_voice, daemon=True).start()
+    threading.Thread(target=_watchdog_motor, daemon=True).start()
     threading.Thread(target=_presence_watcher, daemon=True).start()
     _log("KinectBridge pret. (watchdog Voice + presence actifs)")
     while True:

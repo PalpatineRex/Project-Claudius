@@ -95,7 +95,7 @@ class KinectMotor {
         if (!sensor.ColorStream.IsEnabled) {
             try { sensor.ColorStream.Enable(ColorImageFormat.RgbResolution640x480Fps30); }
             catch { return "ERROR:color_enable"; }
-            Thread.Sleep(2000);
+            Thread.Sleep(2500);  // warm-up si color pas encore actif
         }
 
         ColorImageFrame frame = null;
@@ -222,7 +222,7 @@ class KinectMotor {
         Log("=== Daemon mode ===");
         LoadPresenceConfig();
 
-        InitSensor(false, true);  // depth only at start
+        InitSensor(true, true);  // color + depth for snap + presence
         if (sensor == null) {
             Log("ERROR: no Kinect sensor");
             return;
@@ -233,7 +233,9 @@ class KinectMotor {
         bool wasPresent = false;
         DateTime lastTrigger = DateTime.MinValue;
         DateTime lastConfigCheck = DateTime.Now;
+        DateTime lastDebugLog = DateTime.Now;
         int configCheckIntervalS = 30;
+        int debugLogIntervalS = 10;  // log pixel count every 10s for diagnostics
 
         while (true) {
             // --- Check for gesture commands ---
@@ -270,6 +272,13 @@ class KinectMotor {
             }
 
             bool present = pixels >= presencePixelThreshold;
+
+            // Debug log every N seconds
+            if ((DateTime.Now - lastDebugLog).TotalSeconds >= debugLogIntervalS) {
+                Log(string.Format("DEPTH: {0} pixels (seuil={1}, etat={2})",
+                    pixels, presencePixelThreshold, present ? "PRESENT" : "ABSENT"));
+                lastDebugLog = DateTime.Now;
+            }
 
             // State change detection
             if (present && !wasPresent) {

@@ -10,7 +10,7 @@ import time, os, re, threading, queue, sys
 
 # --- Detection audio systeme (mute quand video/musique joue) ---
 _system_audio_active = False
-_AUDIO_IGNORE = {"pythonw.exe", "python.exe"}  # nos propres process TTS
+_AUDIO_IGNORE = {"pythonw.exe", "python.exe", "opera.exe"}  # nos process + navigateur (onglets media idle)
 
 def _audio_monitor():
     """Thread qui check toutes les 0.5s si du son systeme joue."""
@@ -279,11 +279,27 @@ def _transcription_worker(model):
             _log(f"ERR transcribe: {e}")
 
 def calibrate(stream, duration=2.0):
+    # Attendre que l'audio systeme soit inactif avant de calibrer
+    if _system_audio_active:
+        _log("Calibration: audio systeme actif, attente...")
+        for _ in range(60):  # max 30s d'attente
+            time.sleep(0.5)
+            if not _system_audio_active:
+                break
+        if _system_audio_active:
+            _log("Calibration: audio toujours actif, calibration forcee")
+        else:
+            _log("Calibration: audio inactif, go")
+            time.sleep(0.5)  # petite marge
     _log(f"Calibration {duration}s — silence svp...")
     levels = [rms(stream.read(CHUNK_SAMPLES)[0]) for _ in range(int(duration / CHUNK_DURATION))]
     ambient = float(np.mean(levels))
     # Seuil = max(FIXED_THRESHOLD, ambiant * 1.5) pour s'adapter au bruit
     threshold = max(FIXED_THRESHOLD, ambient * 1.5)
+    # Securite : si seuil anormalement haut, forcer un seuil raisonnable
+    if threshold > 3000:
+        _log(f"WARN: seuil calibre trop haut ({threshold:.0f}) — force a {FIXED_THRESHOLD}")
+        threshold = float(FIXED_THRESHOLD)
     _log(f"Ambiant: {ambient:.0f} -> seuil: {threshold:.0f}")
     return threshold
 
@@ -372,12 +388,14 @@ if __name__ == "__main__":
     except Exception:
         _log(f"Audio: device {BIRD_DEVICE_ID} (info indispo)")
 
+    # Thread detection audio systeme (mute quand video/musique)
+    # Lance AVANT calibration pour eviter de calibrer pendant que l'audio joue
+    threading.Thread(target=_audio_monitor, daemon=True).start()
+    time.sleep(1.5)  # laisser le monitor detecter l'etat audio
+
     # Thread unique de transcription (pas de threads multiples)
     worker = threading.Thread(target=_transcription_worker, args=(model,), daemon=True)
     worker.start()
-
-    # Thread detection audio systeme (mute quand video/musique)
-    threading.Thread(target=_audio_monitor, daemon=True).start()
 
     # Thread heartbeat pour le watchdog Bridge
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
