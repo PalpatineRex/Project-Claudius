@@ -21,21 +21,27 @@ PIPELINE VOIX (ton architecture):
 - System prompt: cache par mtime du fichier contexte
 - Logs: rotation 500 lignes
 
-DERNIERE SESSION (31 mars 2026):
-- Ch5 Vision snap via commande vocale deploye et fonctionnel.
-- Pipeline vision: mot-cle vocal ("regarde", "tu vois", "c'est quoi"...) → _is_vision_request() detecte dans Bridge → trigger snap via motor_cmd.txt → attente snap frais <10s → appel Haiku multimodal unique (image base64 PNG + transcription user + system prompt enrichi vision, max_tokens 150, timeout 20s) → reponse TTS + injection historique conversation.
-- Snap: KinectMotor.exe daemon sauvegarde dans le repertoire Kinect (snapDir passe en arg au daemon via Bridge). Format KinectSnap-DATE.png 640x480.
-- System prompt vision: "[VISION] Tu vois une image de ta camera Kinect. Ne decris PAS ce que tu vois sauf si David te le demande explicitement. Utilise l'image pour COMPRENDRE le contexte et repondre naturellement."
-- Watchdog Motor ajoute dans Bridge: thread _watchdog_motor() surveille le daemon Motor toutes les 15s, relance automatiquement si crash (max 10 relances). _cleanup_boot() tue les Motor residuels au demarrage.
-- audio_ignore.txt: fichier configurable (1 process par ligne) pour exclure des apps du mute audio (opera.exe, comet.exe). Charge au boot de Voice en plus du hardcode.
-- Calibration Voice amelioree: attend que l'audio systeme soit inactif avant calibration (max 30s), securite seuil max 3000 (force a FIXED_THRESHOLD si depasse), audio_monitor lance AVANT calibration.
-- restart_all.py: script clean kill + relaunch (kill Motor/Bridge/Voice, clean locks, relaunch Bridge).
-- deploy.py: shutil.copy2 Bridge+Voice vers C:\Kinect.
+DERNIERE SESSION (1er avril 2026):
+- Ch6 Memoire longue deploye et fonctionnel.
+- memory.json dans C:\Kinect\ : stocke les resumes de sessions (max 50 entrees fichier, 15 dernieres injectees dans le system prompt).
+- Trigger auto : quand David part (transition PRESENT→ABSENT) et qu'il y a eu au moins 2 echanges → Haiku resume la conversation en 1-2 phrases → sauvegarde dans memory.json.
+- Injection au boot : _load_system_prompt() charge le contexte + les 15 derniers souvenirs. Cache intelligent (recharge si claudius_context.txt OU memory.json changent via mtime).
+- Resume non-bloquant : thread separe, pas d'impact sur les blinks/greetings.
+- Anti-doublon : flag _memory_saved_this_session, reset quand David revient.
+- Cout additionnel : ~$0.30/mois.
+- Teste live : Claudius se souvient des sessions passees.
+- GitHub: v3.4 → a committer ch6
+
+SESSIONS PRECEDENTES (rappel):
+- Ch5 Vision snap via commande vocale (regarde/tu vois → snap Kinect → Haiku multimodal → TTS).
+- Ch4 Detection presence Kinect depth + greetings intelligents.
+- Ch3 Watchdog Voice + wake word fuzzy "Claudius".
+- Ch2 Pipeline voix complet (faster-whisper CUDA + Haiku API + Piper blend spectral v3d).
+- Ch1 KinectMotor.cs daemon (snap RGB, gestes, motor_cmd.txt).
 - Compile: csc.exe /platform:x86 /r:"C:\Program Files\Microsoft SDKs\Kinect\v1.8\Assemblies\Microsoft.Kinect.dll" /r:System.Drawing.dll
-- GitHub: v3.3 → a committer ch5
 
 PROJETS EN COURS DE DAVID:
-- Project Claudius (ce projet): tete animatronique Kinect Xbox 360, pipeline voix v3.3 complet. Detection presence Kinect depth (daemon C# continu, configurable). Watchdog Voice OK, wake word Claudius OK, blend spectral v3d OK, CUDA GPU OK. Prochaine etape: vision snap auto → LLM vision. GitHub: github.com/PalpatineRex/Project-Claudius
+- Project Claudius (ce projet): tete animatronique Kinect Xbox 360, pipeline voix v3.4 complet. Detection presence Kinect depth (daemon C# continu, configurable). Memoire longue (memory.json, 15 derniers souvenirs injectes). Vision snap vocale, watchdog Voice+Motor, wake word Claudius, blend spectral v3d, CUDA GPU. GitHub: github.com/PalpatineRex/Project-Claudius
 - From The Deep: jeu video platformer Ghouls'n Ghosts (WW2 + Cosmic Horror), Godot 4.6. Systeme armure GnG (2 hits), double saut flottant, tir 8 directions, 3 vies, HUD. TODO: sprites WW2, projectile inspector, tests.
 - Capcom Pad BT: manette Mega Drive 6 boutons en Bluetooth. ESP32-C3 valide en BLE, ESP32-WROOM-32 commande pour BT Classic. Protocole MD J1 OK (40us timing). LiPo + TP4056 pret. Futur: NES Advantage et SN Programpad BT.
 - Sega Mega Drive dev: nouveau projet jeu retro en C avec SGDK 2.11, Aseprite, Tiled/LDTK, Deflemask/Furnace.

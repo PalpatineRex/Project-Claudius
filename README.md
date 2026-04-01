@@ -13,10 +13,11 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 
 - **Reconnaissance vocale** — faster-whisper small CUDA float16, VAD adaptatif, ~0.5s
 - **Wake word "Claudius"** — Fuzzy match phonétique (supporte "Hey Claudius", "Salut Claudius", etc.), initial_prompt Whisper
+- **Mémoire longue** — Résumé automatique des sessions (Haiku) sauvegardé dans `memory.json`, 15 derniers souvenirs injectés dans le prompt, trigger sur départ (PRESENT→ABSENT), anti-doublon, thread non-bloquant
 - **Vision par commande vocale** — "Claudius, regarde !" → snap Kinect RGB → Claude Haiku multimodal (image+texte) → réponse contextuelle TTS
 - **Détection de présence** — Depth stream Kinect continu, greetings intelligents (heure, premier retour vs re-retour), cooldown anti-spam
 - **Watchdog Voice + Motor** — Bridge surveille Voice et Motor daemon, relance auto si crash/freeze
-- **Intelligence conversationnelle** — Claude Haiku API, mémoire 6 échanges, contexte enrichi dynamique
+- **Intelligence conversationnelle** — Claude Haiku API, mémoire 6 échanges, contexte enrichi dynamique, mémoire longue inter-sessions (15 souvenirs)
 - **Synthèse vocale blend** — Piper TTS Jessica+SIWIS, blend spectral DTW (phase Jessica, magnitudes mixées, consonnes préservées), ~1.1s total
 - **Re-accentuation FR** — Correction automatique des accents manquants avant TTS (clavier QWERTY-friendly)
 - **Gestes physiques** — Moteur tilt Kinect : oui, non, blink, hello, think, reset
@@ -34,7 +35,7 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                      CLAUDIUS v3.3                               │
+│                      CLAUDIUS v3.4                               │
 ├───────────────┬──────────────┬───────────────────┬───────────────┤
 │  KinectVoice  │ KinectBridge │ Piper TTS Blend   │ KinectMotor   │
 │  (Oreilles)   │  (Cerveau)   │    (Bouche)       │(Corps+Vision) │
@@ -43,8 +44,8 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 │ small CUDA    │ API Anthropic│ DTW spectral      │ Daemon continu│
 │ Bird UM1 mic  │ Vision multi │ Blend spectral    │ Depth presence│
 │ VAD adaptatif │ Contexte .txt│ Phase Jessica     │ Snap RGB 640  │
-│ Halluc. filter│ 6 échanges   │ HF preserve       │ Gestes auto   │
-│ pycaw monitor │ Re-accent FR │ Energy conserv.   │ motor_cmd.txt │
+│ Halluc. filter│ Memory JSON  │ HF preserve       │ Gestes auto   │
+│ pycaw monitor │ 6 échanges   │ Energy conserv.   │ motor_cmd.txt │
 └───────────────┴──────────────┴───────────────────┴───────────────┘
 ```
 
@@ -66,6 +67,7 @@ KinectVoice.py
                 ▼
          KinectBridge.py
                 ├─ Watchdog Voice + Motor (PID + heartbeat, relance auto)
+                ├─ Mémoire longue : memory.json (15 souvenirs injectés, résumé auto au départ)
                 ├─ think (geste Kinect immédiat)
                 ├─ Vision : si mot-clé détecté → snap → appel multimodal
                 ├─ Claude Haiku API (~1-2s, contexte enrichi, multimodal si snap)
@@ -125,6 +127,7 @@ Project-Claudius/
 ├── restart_all.py       — Kill + relaunch propre (Motor + Bridge + Voice)
 ├── deploy.py            — Déploiement workbench → C:\Kinect\
 ├── claudius_context.txt — Contexte enrichi pour Haiku (projets, personnalité)
+├── memory.json          — Mémoire longue : résumés des sessions passées (max 50)
 ├── audio_ignore.txt     — Process exclus du mute audio (1 par ligne)
 ├── presence_config.txt  — Config détection présence (distance, seuils, cooldown)
 ├── voice_blend/         — WAV de référence et tests du blend
@@ -221,7 +224,7 @@ python KinectTranscript.py &
 |-----------|-------|
 | VRAM GPU | ~1.5 GB (Whisper + 2× Piper ONNX) |
 | RAM totale | ~1.2 GB |
-| Coût API mensuel (50 msg/jour) | ~0.40€ |
+| Coût API mensuel (50 msg/jour) | ~0.70€ |
 
 ---
 
@@ -229,6 +232,7 @@ python KinectTranscript.py &
 
 | Version | Date | Changements |
 |---------|------|-------------|
+| **v3.4** | **2026-04-01** | **Ch6 Mémoire longue** : `memory.json` stocke les résumés de sessions (max 50, 15 injectés dans le prompt). Trigger auto au départ (PRESENT→ABSENT, min 2 échanges) → Haiku résume en 1-2 phrases. Cache intelligent `_load_system_prompt()` (recharge si context.txt ou memory.json changent). Thread non-bloquant, anti-doublon `_memory_saved_this_session`. ~$0.30/mois additionnel. |
 | **v3.3** | **2026-03-31** | **Ch5 Vision snap** : commande vocale ("regarde", "tu vois") → snap Kinect RGB → appel Claude Haiku multimodal unique (image base64 + transcription, max_tokens 150, timeout 20s) → TTS + enrichissement contexte conversation. **Ch4 Détection présence** : KinectMotor.exe daemon continu (depth 320×240, gestes via motor_cmd.txt, presence_config.txt hot-reload 30s), greetings intelligents (heure + premier retour vs re-retour, cooldown 1h, absence min 5min). **Watchdog Motor** : relance auto daemon si crash (max 10). **audio_ignore.txt** : fichier configurable pour exclure des apps du mute audio. **Calibration Voice** : attend audio inactif, sécurité seuil max 3000. **restart_all.py** : kill + relaunch propre. |
 | **v3.2** | **2026-03-28** | **Watchdog Voice** : thread Bridge surveille Voice (PID + heartbeat 10s), relance auto si crash/freeze, cooldown 60s, max 5 relances, reset 10min. **Wake word "Claudius"** : initial_prompt Whisper, fuzzy match phonétique partout dans la phrase (noyaux claud/clod/audic), support préfixe (Hey/Oui/Salut Claudius). **Latence réduite** : SILENCE_AFTER 1.5→0.8s, MIN_DURATION 0.8→0.5s, seuil micro 1000→500. |
 | v3.0 | 2026-03-19 | **Blend spectral v3d** : DTW cosine mel features, warp continu, STFT vectorisée, phase Jessica + magnitudes mixées, gate silence, HF preserve consonnes, détecteur transitoires, conservation énergie. Re-accentuation FR. sounddevice cross-platform. scipy importé au boot. Volume normalisé 31000. |
@@ -247,6 +251,7 @@ python KinectTranscript.py &
 - [x] Détection de présence (depth stream Kinect, daemon C#)
 - [x] Vision — snap via commande vocale → Claude Haiku multimodal
 - [x] Watchdog Motor — relance auto daemon si crash
+- [x] Mémoire longue — résumés de sessions, souvenirs inter-sessions
 - [ ] Bras animatroniques (ATX power supply, PCA9685 servos)
 - [ ] Interface web dashboard
 - [ ] Voix custom (entraîner un modèle TTS perso)
