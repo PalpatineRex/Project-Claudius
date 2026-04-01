@@ -15,36 +15,35 @@ PIPELINE VOIX (ton architecture):
 - LLM: Claude Haiku via API Anthropic (cle dans api_key.txt > env var ANTHROPIC_API_KEY, strip guillemets auto)
 - TTS: Voix blend Jessica+SIWIS 50/50 (Piper CUDA, 2 modeles boot ~4s, synth parallele 2 threads, blend spectral v3d: DTW cosine mel features 25ms + warp interp continu + blend spectral phase Jessica magnitudes mixees + gate silence 12% quadratique + HF preserve >4kHz + transient detect consonnes Jessica pure + energy conservation par frame, ~100ms blend, ~1.1s total)
 - Audio: sounddevice (cross-platform, synthese RAM, pas de WAV disque), detection auto mute quand video/musique joue (pycaw)
+- SFX: sons synthetiques numpy (boot jingle, presence chime, listen beep, wake chime). Cache en RAM, non-bloquant sauf listen+presence. Skip auto si TTS en cours.
 - Gestes: KinectMotor.exe (oui/non/blink/hello/think/reset), auto-blink
 - Chemins: portables via env vars CLAUDIUS_* + relatifs au script + sys.executable
 - CUDA: auto-detecte via site.getsitepackages() (cublas, cudnn, cufft, cuda_runtime, cusolver, cusparse, nvjitlink)
 - System prompt: cache par mtime du fichier contexte
 - Logs: rotation 500 lignes
 
-DERNIERE SESSION (1er avril 2026):
-- Ch6 Memoire longue deploye et fonctionnel.
-- memory.json dans C:\Kinect\ : stocke les resumes de sessions (max 50 entrees fichier, 15 dernieres injectees dans le system prompt).
-- Trigger auto : quand David part (transition PRESENT→ABSENT) et qu'il y a eu au moins 2 echanges → Haiku resume la conversation en 1-2 phrases → sauvegarde dans memory.json.
-- Injection au boot : _load_system_prompt() charge le contexte + les 15 derniers souvenirs. Cache intelligent (recharge si claudius_context.txt OU memory.json changent via mtime).
-- Resume non-bloquant : thread separe, pas d'impact sur les blinks/greetings.
-- Anti-doublon : flag _memory_saved_this_session, reset quand David revient.
-- Cout additionnel : ~$0.30/mois.
-- Teste live : Claudius se souvient des sessions passees.
-- GitHub: v3.4 → a committer ch6
+DERNIERE SESSION (1 avril 2026):
+- Ch7 Reactions sonores deploye: 4 SFX synthetiques numpy+sounddevice (boot jingle 1s melodie Do-Mi-Sol+accord, presence chime 0.4s ding harmoniques, listen beep 0.25s 2 bips montants, wake chime 0.6s sweep+note). Cache RAM (_sfx_cache), non-bloquant par defaut (thread), bloquant pour listen+presence. Skip auto si TTS parle (_speaking). Boot jingle retarde 5s pour eviter pollution calibration Voice. Volume SFX_VOLUME=0.3.
+- Elegoo Mars thermostat DONE: WZ1209 fixe sur la machine, brew belt chauffante sur le capot amovible. Alimente en 12V interne Mars. Relais K1←phase secteur, K0→phase belt via schuko male/femelle pour deconnexion propre du capot. Neutre direct sans connecteur. Consigne 28°C, hysteresis 1°C (coupe 28, rallume 27). P2=35°C securite. Sonde au dessus bras Z (temp ambiante interne). Teste et valide.
 
-SESSIONS PRECEDENTES (rappel):
-- Ch5 Vision snap via commande vocale (regarde/tu vois → snap Kinect → Haiku multimodal → TTS).
-- Ch4 Detection presence Kinect depth + greetings intelligents.
-- Ch3 Watchdog Voice + wake word fuzzy "Claudius".
-- Ch2 Pipeline voix complet (faster-whisper CUDA + Haiku API + Piper blend spectral v3d).
-- Ch1 KinectMotor.cs daemon (snap RGB, gestes, motor_cmd.txt).
+AVANT-DERNIERE SESSION (31 mars 2026):
+- Ch5 Vision snap via commande vocale deploye et fonctionnel.
+- Pipeline vision: mot-cle vocal ("regarde", "tu vois", "c'est quoi"...) → _is_vision_request() detecte dans Bridge → trigger snap via motor_cmd.txt → attente snap frais <10s → appel Haiku multimodal unique (image base64 PNG + transcription user + system prompt enrichi vision, max_tokens 150, timeout 20s) → reponse TTS + injection historique conversation.
+- Snap: KinectMotor.exe daemon sauvegarde dans le repertoire Kinect (snapDir passe en arg au daemon via Bridge). Format KinectSnap-DATE.png 640x480.
+- System prompt vision: "[VISION] Tu vois une image de ta camera Kinect. Ne decris PAS ce que tu vois sauf si David te le demande explicitement. Utilise l'image pour COMPRENDRE le contexte et repondre naturellement."
+- Watchdog Motor ajoute dans Bridge: thread _watchdog_motor() surveille le daemon Motor toutes les 15s, relance automatiquement si crash (max 10 relances). _cleanup_boot() tue les Motor residuels au demarrage.
+- audio_ignore.txt: fichier configurable (1 process par ligne) pour exclure des apps du mute audio (opera.exe, comet.exe). Charge au boot de Voice en plus du hardcode.
+- Calibration Voice amelioree: attend que l'audio systeme soit inactif avant calibration (max 30s), securite seuil max 3000 (force a FIXED_THRESHOLD si depasse), audio_monitor lance AVANT calibration.
+- restart_all.py: script clean kill + relaunch (kill Motor/Bridge/Voice, clean locks, relaunch Bridge).
+- deploy.py: shutil.copy2 Bridge+Voice vers C:\Kinect.
 - Compile: csc.exe /platform:x86 /r:"C:\Program Files\Microsoft SDKs\Kinect\v1.8\Assemblies\Microsoft.Kinect.dll" /r:System.Drawing.dll
+- GitHub: v3.3 → a committer ch5
 
 PROJETS EN COURS DE DAVID:
-- Project Claudius (ce projet): tete animatronique Kinect Xbox 360, pipeline voix v3.4 complet. Detection presence Kinect depth (daemon C# continu, configurable). Memoire longue (memory.json, 15 derniers souvenirs injectes). Vision snap vocale, watchdog Voice+Motor, wake word Claudius, blend spectral v3d, CUDA GPU. GitHub: github.com/PalpatineRex/Project-Claudius
+- Project Claudius (ce projet): tete animatronique Kinect Xbox 360, pipeline voix v3.5 complet. Detection presence Kinect depth (daemon C# continu, configurable). Watchdog Voice OK, wake word Claudius OK, blend spectral v3d OK, CUDA GPU OK, SFX synthetiques OK. GitHub: github.com/PalpatineRex/Project-Claudius
 - From The Deep: jeu video platformer Ghouls'n Ghosts (WW2 + Cosmic Horror), Godot 4.6. Systeme armure GnG (2 hits), double saut flottant, tir 8 directions, 3 vies, HUD. TODO: sprites WW2, projectile inspector, tests.
-- Capcom Pad BT: manette Mega Drive 6 boutons en Bluetooth. ESP32-C3 valide en BLE, ESP32-WROOM-32 commande pour BT Classic. Protocole MD J1 OK (40us timing). LiPo + TP4056 pret. Futur: NES Advantage et SN Programpad BT.
+- Capcom Pad BT: manette Mega Drive 6 boutons en Bluetooth. ESP32-C3 valide en BLE, ESP32-WROOM-32 commande pour BT Classic. Protocole MD J1 OK (40us timing). LiPo + TP4056 pret. Futur: NES Advantage et SN Programpad BT. ESP32-C3 sera recycle comme bridge WiFi pour WZ5005 quand WROOM prend le relais.
 - Sega Mega Drive dev: nouveau projet jeu retro en C avec SGDK 2.11, Aseprite, Tiled/LDTK, Deflemask/Furnace.
-- Impression 3D resine: Elegoo Mars Original (ecran PJ608 mono 2K), resine Sunlu Water Wash Grey, couvercle cuve custom V4. Bambu Lab P2S FDM prevu pour pieces structurelles.
+- Impression 3D resine: Elegoo Mars Original (ecran PJ608 mono 2K, W1209 12V pour controle temperature enceinte), resine Sunlu Water Wash Grey, couvercle cuve custom V4. Bambu Lab P2S FDM prevu pour pieces structurelles.
 - SNES retro: FXPak Pro organise (4156 ROMs, genres classes), CRT Goldstar RGB peritel, X-Terminator recherche.
-- Labo DIY: alim ATX Cooler Master 500W convertie (boost XWST 5A + WZ5005 CC/CV), testee Fluke 115. ATX reserve pour futurs servos Claudius.
+- Labo DIY: alim ATX Cooler Master 500W convertie (boost XWST 5A 44.75V + WZ5005 CC/CV), testee Fluke 115. Montage planche bois/inox alvéolé/pieds. En facade: WZ5005 + board derivation 3.3V/-12V/+12V (borniers banane, LEDs) + W1209 5V (controle ventilo auto, sonde NTC sur bloc alu/boost, alimente rail 5V ATX). TODO: fusible 5A (boost→WZ5005), fusible ATX→boost, CH340G USB-C TTL (2€) pour controle PC, ESP32-C3 bridge WiFi custom (module officiel WUZHI introuvable). ATX reserve pour futurs servos/bras animatroniques Claudius (PCA9685, rails 5V/12V/3.3V). Boost casse garde pour reparation/cannibalisation.

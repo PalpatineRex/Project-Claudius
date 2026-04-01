@@ -13,6 +13,7 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 
 - **Reconnaissance vocale** — faster-whisper small CUDA float16, VAD adaptatif, ~0.5s
 - **Wake word "Claudius"** — Fuzzy match phonétique (supporte "Hey Claudius", "Salut Claudius", etc.), initial_prompt Whisper
+- **Réactions sonores** — 4 SFX synthétiques numpy (boot jingle, presence chime, listen beep, wake chime), cache RAM, skip auto si TTS parle
 - **Mémoire longue** — Résumé automatique des sessions (Haiku) sauvegardé dans `memory.json`, 15 derniers souvenirs injectés dans le prompt, trigger sur départ (PRESENT→ABSENT), anti-doublon, thread non-bloquant
 - **Vision par commande vocale** — "Claudius, regarde !" → snap Kinect RGB → Claude Haiku multimodal (image+texte) → réponse contextuelle TTS
 - **Détection de présence** — Depth stream Kinect continu, greetings intelligents (heure, premier retour vs re-retour), cooldown anti-spam
@@ -35,7 +36,7 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                      CLAUDIUS v3.4                               │
+│                      CLAUDIUS v3.5                               │
 ├───────────────┬──────────────┬───────────────────┬───────────────┤
 │  KinectVoice  │ KinectBridge │ Piper TTS Blend   │ KinectMotor   │
 │  (Oreilles)   │  (Cerveau)   │    (Bouche)       │(Corps+Vision) │
@@ -68,6 +69,7 @@ KinectVoice.py
          KinectBridge.py
                 ├─ Watchdog Voice + Motor (PID + heartbeat, relance auto)
                 ├─ Mémoire longue : memory.json (15 souvenirs injectés, résumé auto au départ)
+                ├─ SFX listen beep (accusé réception, skip si TTS parle)
                 ├─ think (geste Kinect immédiat)
                 ├─ Vision : si mot-clé détecté → snap → appel multimodal
                 ├─ Claude Haiku API (~1-2s, contexte enrichi, multimodal si snap)
@@ -232,6 +234,7 @@ python KinectTranscript.py &
 
 | Version | Date | Changements |
 |---------|------|-------------|
+| **v3.5** | **2026-04-01** | **Ch7 Réactions sonores** : 4 SFX synthétiques numpy+sounddevice (boot jingle Do-Mi-Sol+accord 1s, presence chime harmoniques 0.4s, listen beep 2 bips 0.25s, wake sweep+note 0.6s). Cache RAM `_sfx_cache`, non-bloquant par défaut (thread), bloquant pour listen+presence. Skip auto si TTS parle (`_speaking`). Boot jingle retardé 5s pour ne pas polluer calibration Voice. `SFX_VOLUME=0.3`. |
 | **v3.4** | **2026-04-01** | **Ch6 Mémoire longue** : `memory.json` stocke les résumés de sessions (max 50, 15 injectés dans le prompt). Trigger auto au départ (PRESENT→ABSENT, min 2 échanges) → Haiku résume en 1-2 phrases. Cache intelligent `_load_system_prompt()` (recharge si context.txt ou memory.json changent). Thread non-bloquant, anti-doublon `_memory_saved_this_session`. ~$0.30/mois additionnel. |
 | **v3.3** | **2026-03-31** | **Ch5 Vision snap** : commande vocale ("regarde", "tu vois") → snap Kinect RGB → appel Claude Haiku multimodal unique (image base64 + transcription, max_tokens 150, timeout 20s) → TTS + enrichissement contexte conversation. **Ch4 Détection présence** : KinectMotor.exe daemon continu (depth 320×240, gestes via motor_cmd.txt, presence_config.txt hot-reload 30s), greetings intelligents (heure + premier retour vs re-retour, cooldown 1h, absence min 5min). **Watchdog Motor** : relance auto daemon si crash (max 10). **audio_ignore.txt** : fichier configurable pour exclure des apps du mute audio. **Calibration Voice** : attend audio inactif, sécurité seuil max 3000. **restart_all.py** : kill + relaunch propre. |
 | **v3.2** | **2026-03-28** | **Watchdog Voice** : thread Bridge surveille Voice (PID + heartbeat 10s), relance auto si crash/freeze, cooldown 60s, max 5 relances, reset 10min. **Wake word "Claudius"** : initial_prompt Whisper, fuzzy match phonétique partout dans la phrase (noyaux claud/clod/audic), support préfixe (Hey/Oui/Salut Claudius). **Latence réduite** : SILENCE_AFTER 1.5→0.8s, MIN_DURATION 0.8→0.5s, seuil micro 1000→500. |
@@ -252,6 +255,7 @@ python KinectTranscript.py &
 - [x] Vision — snap via commande vocale → Claude Haiku multimodal
 - [x] Watchdog Motor — relance auto daemon si crash
 - [x] Mémoire longue — résumés de sessions, souvenirs inter-sessions
+- [x] Réactions sonores — SFX synthétiques (boot, présence, listen, wake)
 - [ ] Bras animatroniques (ATX power supply, PCA9685 servos)
 - [ ] Interface web dashboard
 - [ ] Voix custom (entraîner un modèle TTS perso)

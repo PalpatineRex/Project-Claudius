@@ -40,6 +40,8 @@ BLEND_RATIO      = 0.5  # 0.0=Jessica pure, 1.0=SIWIS pure
 CONTEXT_FILE     = os.path.join(_DATA_DIR, "claudius_context.txt")
 MOTOR_CMD_FILE   = os.path.join(_DATA_DIR, "motor_cmd.txt")
 PRESENCE_FILE    = os.path.join(_DATA_DIR, "presence.txt")
+MEMORY_FILE      = os.path.join(_DATA_DIR, "memory.json")
+MAX_MEMORIES     = 15  # nb de souvenirs gardes dans le contexte
 LOG_MAX_LINES    = 2000
 _log_count       = 0
 
@@ -93,6 +95,86 @@ def _cleanup_boot():
     # Kill Motor residuel pour liberer le Kinect
     os.system("taskkill /f /im KinectMotor.exe >nul 2>nul")
     time.sleep(1)
+
+# --- SFX : sons synthetiques (numpy + sounddevice) ---
+
+SFX_VOLUME = 0.3  # volume global SFX (0.0-1.0)
+SFX_SR     = 22050
+
+def _sfx_sin(freq, duration):
+    t = np.linspace(0, duration, int(SFX_SR * duration), endpoint=False)
+    return np.sin(2 * np.pi * freq * t)
+
+def _sfx_fade(audio, fade_in=0.01, fade_out=0.01):
+    n_in = int(SFX_SR * fade_in)
+    n_out = int(SFX_SR * fade_out)
+    if n_in > 0 and n_in < len(audio):
+        audio[:n_in] *= np.linspace(0, 1, n_in)
+    if n_out > 0 and n_out < len(audio):
+        audio[-n_out:] *= np.linspace(1, 0, n_out)
+    return audio
+
+def _sfx_boot():
+    """Boot jingle — 3 notes montantes + accord majeur (~1s)."""
+    parts = []
+    for freq, dur, vol in [(523,0.15,0.7),(659,0.15,0.8),(784,0.2,0.9)]:
+        parts.append(_sfx_fade(_sfx_sin(freq, dur) * vol, 0.005, 0.02))
+        parts.append(np.zeros(int(SFX_SR * 0.05)))
+    chord = _sfx_sin(523,0.4)*0.4 + _sfx_sin(659,0.4)*0.35 + _sfx_sin(784,0.4)*0.35 + _sfx_sin(1568,0.4)*0.1
+    parts.append(_sfx_fade(chord, 0.01, 0.15))
+    return np.concatenate(parts) * SFX_VOLUME
+
+def _sfx_presence():
+    """Presence chime — ding doux avec harmoniques (~0.4s)."""
+    dur = 0.4
+    t = np.linspace(0, dur, int(SFX_SR * dur), endpoint=False)
+    env = np.exp(-t * 6)
+    tone = _sfx_sin(880,dur)*0.5 + _sfx_sin(1760,dur)*0.25 + _sfx_sin(2640,dur)*0.15 + _sfx_sin(1320,dur)*0.1
+    return _sfx_fade(tone * env, 0.005, 0.01) * SFX_VOLUME
+
+def _sfx_listen():
+    """Listen beep — 2 bips courts montants (~0.25s)."""
+    parts = []
+    parts.append(_sfx_fade(_sfx_sin(600, 0.08) * 1.0, 0.003, 0.01))
+    parts.append(np.zeros(int(SFX_SR * 0.04)))
+    parts.append(_sfx_fade(_sfx_sin(900, 0.08) * 1.0, 0.003, 0.01))
+    # Petit silence final pour que sd.wait() finisse proprement
+    parts.append(np.zeros(int(SFX_SR * 0.05)))
+    return np.concatenate(parts) * (SFX_VOLUME * 1.5)  # boost volume listen
+
+def _sfx_wake():
+    """Wake chime — sweep ascendant + note finale (~0.6s)."""
+    dur_s = 0.3
+    t = np.linspace(0, dur_s, int(SFX_SR * dur_s), endpoint=False)
+    freq = 400 + 400 * (t / dur_s)
+    sweep = np.sin(2 * np.pi * np.cumsum(freq) / SFX_SR) * 0.6 * np.linspace(0.3, 1.0, len(t))
+    sweep = _sfx_fade(sweep, 0.01, 0.02)
+    note = _sfx_fade(_sfx_sin(784, 0.25) * 0.7, 0.005, 0.1)
+    return np.concatenate([sweep, np.zeros(int(SFX_SR * 0.05)), note]) * SFX_VOLUME
+
+# Cache des sons (generes une seule fois)
+_sfx_cache = {}
+
+def _play_sfx(name, blocking=False):
+    """Joue un SFX par nom. Non-bloquant par defaut, sauf si blocking=True."""
+    def _do():
+        if _speaking.is_set():
+            return  # ne pas jouer par-dessus le TTS
+        try:
+            if name not in _sfx_cache:
+                gen = {"boot": _sfx_boot, "presence": _sfx_presence,
+                       "listen": _sfx_listen, "wake": _sfx_wake}.get(name)
+                if gen is None: return
+                _sfx_cache[name] = gen().astype(np.float32)
+            _log(f"SFX: {name} ({len(_sfx_cache[name])/SFX_SR:.2f}s)")
+            sd.play(_sfx_cache[name], samplerate=SFX_SR)
+            sd.wait()
+        except Exception as e:
+            _log(f"SFX ERR {name}: {e}")
+    if blocking:
+        _do()
+    else:
+        threading.Thread(target=_do, daemon=True).start()
 
 # --- Etat global ---
 _piper_voice  = None
@@ -207,6 +289,9 @@ def _load_piper_bg():
             _log("ERR Piper: " + str(e))
         finally:
             _piper_ready.set()
+            # Attendre que Voice ait fini de calibrer avant le jingle
+            time.sleep(5)
+            _play_sfx("boot")  # jingle demarrage
 
 def _blend_voices(j_audio, s_audio, ratio=0.5):
     """Blend Jessica+SIWIS — DTW spectral + warp continu + blend spectral (fusion DBZ v3d).
@@ -547,6 +632,87 @@ def _is_vision_request(text):
     t = text.lower()
     return any(kw in t for kw in _VISION_KEYWORDS)
 
+# --- Memoire longue ---
+
+def _load_memories():
+    """Charge les souvenirs depuis memory.json."""
+    try:
+        if os.path.exists(MEMORY_FILE):
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                memories = json.load(f)
+            return memories[-MAX_MEMORIES:]  # garder les plus recents
+    except Exception as e:
+        _log(f"ERR load memories: {e}")
+    return []
+
+def _save_memory(summary, exchange_count):
+    """Ajoute un souvenir dans memory.json."""
+    try:
+        memories = _load_memories() if os.path.exists(MEMORY_FILE) else []
+        entry = {
+            "date": time.strftime("%Y-%m-%d %H:%M"),
+            "summary": summary,
+            "exchanges": exchange_count
+        }
+        memories.append(entry)
+        # Garder max 50 en fichier (on n'injecte que les 15 derniers)
+        if len(memories) > 50:
+            memories = memories[-50:]
+        tmp = MEMORY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(memories, f, ensure_ascii=False, indent=2)
+        if os.path.exists(MEMORY_FILE):
+            os.remove(MEMORY_FILE)
+        os.rename(tmp, MEMORY_FILE)
+        _log(f"MEMORY: souvenir sauve ({exchange_count} echanges)")
+    except Exception as e:
+        _log(f"ERR save memory: {e}")
+
+def _summarize_session(history):
+    """Demande a Haiku de resumer la conversation en 1-2 phrases."""
+    if len(history) < 2:
+        return None
+    try:
+        # Construire un historique texte simple (sans images)
+        text_history = []
+        for msg in history:
+            role = "David" if msg["role"] == "user" else "Claudius"
+            content = msg["content"]
+            if isinstance(content, list):
+                # Message multimodal — extraire le texte
+                content = " ".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
+            text_history.append(f"{role}: {content}")
+        convo = "\n".join(text_history)
+        payload = json.dumps({
+            "model": ANTHROPIC_MODEL,
+            "max_tokens": 80,
+            "system": "Resume cette conversation en 1-2 phrases courtes en francais. Juste les faits saillants, pas de formule.",
+            "messages": [{"role": "user", "content": convo}]
+        }).encode("utf-8")
+        req = urllib.request.Request(ANTHROPIC_URL, data=payload, method="POST", headers={
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01"
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            summary = json.loads(resp.read().decode())["content"][0]["text"].strip()
+        _log(f"MEMORY: resume genere: {summary[:80]}")
+        return summary
+    except Exception as e:
+        _log(f"ERR summarize: {e}")
+        return None
+
+def _format_memories_for_prompt():
+    """Formate les souvenirs pour injection dans le system prompt."""
+    memories = _load_memories()
+    if not memories:
+        return ""
+    lines = ["\nSOUVENIRS DES SESSIONS PRECEDENTES (du plus ancien au plus recent):"]
+    for m in memories:
+        lines.append(f"- [{m['date']}] {m['summary']}")
+    lines.append("Utilise ces souvenirs naturellement si pertinent, sans les lister.")
+    return "\n".join(lines)
+
 # --- LLM Claude Haiku via API ---
 
 _SYSTEM_FALLBACK = (
@@ -558,18 +724,27 @@ _cached_system_prompt = None
 _cached_system_mtime = 0
 
 def _load_system_prompt():
-    """Charge le contexte depuis claudius_context.txt, cache par mtime."""
+    """Charge le contexte depuis claudius_context.txt + souvenirs memoire."""
     global _cached_system_prompt, _cached_system_mtime
     for path in [CONTEXT_FILE, os.path.join(_KINECT_DIR, "claudius_context.txt")]:
         try:
             mt = os.path.getmtime(path)
-            if _cached_system_prompt and mt == _cached_system_mtime:
+            # Recharger aussi si memory.json a change
+            mem_mt = 0
+            try: mem_mt = os.path.getmtime(MEMORY_FILE)
+            except: pass
+            cache_key = (mt, mem_mt)
+            if _cached_system_prompt and cache_key == _cached_system_mtime:
                 return _cached_system_prompt
             with open(path, "r", encoding="utf-8") as f:
                 ctx = f.read().strip()
             if ctx:
+                # Ajouter les souvenirs
+                memories_text = _format_memories_for_prompt()
+                if memories_text:
+                    ctx += "\n" + memories_text
                 _cached_system_prompt = ctx
-                _cached_system_mtime = mt
+                _cached_system_mtime = cache_key
                 return ctx
         except Exception:
             continue
@@ -664,6 +839,8 @@ def _gesture_for(text):
 
 def _handle_voice(text):
     _log("VOICE -> Claude: " + text[:60])
+    if not _speaking.is_set():
+        _play_sfx("listen", blocking=True)  # bip seulement si pas en train de parler
     # --- Vision : si demande vision, trigger snap et attendre ---
     snap_path = None
     if _is_vision_request(text):
@@ -730,6 +907,7 @@ def _do_wake():
     _sleeping.clear()
     try: os.remove(SLEEP_FILE)
     except: pass
+    _play_sfx("wake")  # chime reveil
     _run("hello")
     _log("Claudius reveille")
 
@@ -947,6 +1125,7 @@ def _presence_watcher():
     last_greeting_time = 0.0
     was_present = False
     absence_start = 0.0  # quand l'absence a commence
+    _memory_saved_this_session = False  # evite double sauvegarde
     _log("PRESENCE: watcher actif")
 
     # Attendre que Piper soit pret avant de saluer
@@ -970,6 +1149,17 @@ def _presence_watcher():
         # Track absence duration
         if not present and was_present:
             absence_start = time.time()
+            # --- Memoire longue : sauvegarder quand David part ---
+            if not _memory_saved_this_session:
+                with _history_lock:
+                    history_copy = list(_conversation_history)
+                if len(history_copy) >= 4:  # au moins 2 echanges (2 user + 2 assistant)
+                    _memory_saved_this_session = True
+                    def _do_save():
+                        summary = _summarize_session(history_copy)
+                        if summary:
+                            _save_memory(summary, len(history_copy) // 2)
+                    threading.Thread(target=_do_save, daemon=True).start()
         
         if present and not was_present:
             now = time.time()
@@ -980,6 +1170,7 @@ def _presence_watcher():
             if cooldown_ok and absence_ok:
                 _log(f"PRESENCE: detection! ({state[2]} pixels, absent {absence_duration:.0f}s)")
                 last_greeting_time = now
+                _memory_saved_this_session = False  # reset pour prochaine session
 
                 # Premier greeting = bonjour/bonsoir, ensuite = retour
                 if not _PRESENCE_FIRST_DONE:
@@ -996,6 +1187,7 @@ def _presence_watcher():
 
                 _priority_evt.set()
                 try:
+                    _play_sfx("presence", blocking=True)  # chime avant greeting
                     threading.Thread(target=_run, args=("hello",), daemon=True).start()
                     _tts_wait(greeting)
                     try:
