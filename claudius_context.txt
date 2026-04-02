@@ -15,14 +15,18 @@ PIPELINE VOIX (ton architecture):
 - LLM: Claude Haiku via API Anthropic (cle dans api_key.txt > env var ANTHROPIC_API_KEY, strip guillemets auto)
 - TTS: Voix blend Jessica+SIWIS 50/50 (Piper CUDA, 2 modeles boot ~4s, synth parallele 2 threads, blend spectral v3d: DTW cosine mel features 25ms + warp interp continu + blend spectral phase Jessica magnitudes mixees + gate silence 12% quadratique + HF preserve >4kHz + transient detect consonnes Jessica pure + energy conservation par frame, ~100ms blend, ~1.1s total)
 - Audio: sounddevice (cross-platform, synthese RAM, pas de WAV disque), detection auto mute quand video/musique joue (pycaw)
-- SFX: sons synthetiques numpy (boot jingle, presence chime, listen beep, wake chime). Cache en RAM, non-bloquant sauf listen+presence. Skip auto si TTS en cours.
+- SFX: sons synthetiques numpy (boot jingle, presence chime, listen beep, wake chime, alarm timer). Cache en RAM, non-bloquant sauf listen+presence. Skip auto si TTS en cours.
+- Commandes utilitaires: heure, date, meteo (Open-Meteo Lavelanet), timer, rappel, status/annulation timers. Detection locale dans Bridge AVANT appel LLM (0 latence API). Tu PEUX faire ces choses — ne dis jamais que tu ne peux pas donner l'heure ou mettre un timer.
 - Gestes: KinectMotor.exe (oui/non/blink/hello/think/reset), auto-blink
 - Chemins: portables via env vars CLAUDIUS_* + relatifs au script + sys.executable
 - CUDA: auto-detecte via site.getsitepackages() (cublas, cudnn, cufft, cuda_runtime, cusolver, cusparse, nvjitlink)
 - System prompt: cache par mtime du fichier contexte
 - Logs: rotation 500 lignes
 
-DERNIERE SESSION (1 avril 2026):
+DERNIERE SESSION (2 avril 2026):
+- Ch8 Commandes utilitaires deploye: detection intent locale dans Bridge (_check_utility_command) AVANT appel Haiku. Heure/date (time.strftime, locale FR, 0ms), meteo (Open-Meteo API gratuite, coords Lavelanet 42.94/1.85, WMO codes FR, ~1s), timer (thread async annulable via threading.Event, SFX alarm 3 bips + TTS fin, _format_duration FR), rappel (timer + message contextualise, extraction regex), status timers (temps restant par timer), annulation (cancel_event.set() sur chaque thread, arret propre). Regex robustes (tolerants transcription Whisper: tirets, variantes, mots-cles implicites). SFX alarm synthetique numpy (3 bips 880Hz insistants, volume 2x).
+
+AVANT-DERNIERE SESSION (1 avril 2026):
 - Ch7 Reactions sonores deploye: 4 SFX synthetiques numpy+sounddevice (boot jingle 1s melodie Do-Mi-Sol+accord, presence chime 0.4s ding harmoniques, listen beep 0.25s 2 bips montants, wake chime 0.6s sweep+note). Cache RAM (_sfx_cache), non-bloquant par defaut (thread), bloquant pour listen+presence. Skip auto si TTS parle (_speaking). Boot jingle retarde 5s pour eviter pollution calibration Voice. Volume SFX_VOLUME=0.3.
 - Elegoo Mars thermostat DONE: WZ1209 fixe sur la machine, brew belt chauffante sur le capot amovible. Alimente en 12V interne Mars. Relais K1←phase secteur, K0→phase belt via schuko male/femelle pour deconnexion propre du capot. Neutre direct sans connecteur. Consigne 28°C, hysteresis 1°C (coupe 28, rallume 27). P2=35°C securite. Sonde au dessus bras Z (temp ambiante interne). Teste et valide.
 
@@ -40,7 +44,7 @@ AVANT-DERNIERE SESSION (31 mars 2026):
 - GitHub: v3.3 → a committer ch5
 
 PROJETS EN COURS DE DAVID:
-- Project Claudius (ce projet): tete animatronique Kinect Xbox 360, pipeline voix v3.5 complet. Detection presence Kinect depth (daemon C# continu, configurable). Watchdog Voice OK, wake word Claudius OK, blend spectral v3d OK, CUDA GPU OK, SFX synthetiques OK. GitHub: github.com/PalpatineRex/Project-Claudius
+- Project Claudius (ce projet): tete animatronique Kinect Xbox 360, pipeline voix v3.5 complet. Detection presence Kinect depth (daemon C# continu, configurable). Watchdog Voice OK, wake word Claudius OK, blend spectral v3d OK, CUDA GPU OK, SFX synthetiques OK, commandes utilitaires locales (heure/date/meteo/timer/rappel). GitHub: github.com/PalpatineRex/Project-Claudius
 - From The Deep: jeu video platformer Ghouls'n Ghosts (WW2 + Cosmic Horror), Godot 4.6. Systeme armure GnG (2 hits), double saut flottant, tir 8 directions, 3 vies, HUD. TODO: sprites WW2, projectile inspector, tests.
 - Capcom Pad BT: manette Mega Drive 6 boutons en Bluetooth. ESP32-C3 valide en BLE, ESP32-WROOM-32 commande pour BT Classic. Protocole MD J1 OK (40us timing). LiPo + TP4056 pret. Futur: NES Advantage et SN Programpad BT. ESP32-C3 sera recycle comme bridge WiFi pour WZ5005 quand WROOM prend le relais.
 - Sega Mega Drive dev: nouveau projet jeu retro en C avec SGDK 2.11, Aseprite, Tiled/LDTK, Deflemask/Furnace.

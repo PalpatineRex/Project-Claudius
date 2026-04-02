@@ -713,6 +713,276 @@ def _format_memories_for_prompt():
     lines.append("Utilise ces souvenirs naturellement si pertinent, sans les lister.")
     return "\n".join(lines)
 
+# --- Ch8 : Commandes utilitaires (heure, meteo, timer, rappel) ---
+
+import locale
+try:
+    locale.setlocale(locale.LC_TIME, "fr_FR.UTF-8")
+except Exception:
+    try: locale.setlocale(locale.LC_TIME, "French_France.1252")
+    except Exception: pass
+
+# Coordonnees Lavelanet (Occitanie) pour Open-Meteo
+_METEO_LAT = 42.94
+_METEO_LON = 1.85
+_METEO_URL = (
+    "https://api.open-meteo.com/v1/forecast?"
+    f"latitude={_METEO_LAT}&longitude={_METEO_LON}"
+    "&current=temperature_2m,weathercode,windspeed_10m,relative_humidity_2m"
+    "&timezone=Europe/Paris"
+)
+
+# WMO weather codes -> description FR
+_WMO_CODES = {
+    0: "ciel degage", 1: "peu nuageux", 2: "partiellement nuageux", 3: "couvert",
+    45: "brouillard", 48: "brouillard givrant",
+    51: "bruine legere", 53: "bruine", 55: "bruine forte",
+    61: "pluie legere", 63: "pluie moderee", 65: "forte pluie",
+    71: "neige legere", 73: "neige moderee", 75: "forte neige",
+    77: "grains de neige", 80: "averses legeres", 81: "averses", 82: "fortes averses",
+    85: "averses de neige legeres", 86: "fortes averses de neige",
+    95: "orage", 96: "orage avec grele legere", 99: "orage avec forte grele",
+}
+
+# Timers/rappels actifs
+_active_timers = []
+_timer_lock = threading.Lock()
+_timer_id_counter = 0
+
+def _sfx_alarm():
+    """Son alarme timer — 3 bips insistants (~0.8s)."""
+    parts = []
+    for _ in range(3):
+        parts.append(_sfx_fade(_sfx_sin(880, 0.12) * 1.0, 0.005, 0.01))
+        parts.append(np.zeros(int(SFX_SR * 0.08)))
+    parts.append(np.zeros(int(SFX_SR * 0.05)))
+    return np.concatenate(parts) * (SFX_VOLUME * 2.0)
+
+def _play_alarm():
+    """Joue le SFX alarme (bloquant)."""
+    try:
+        if "alarm" not in _sfx_cache:
+            _sfx_cache["alarm"] = _sfx_alarm().astype(np.float32)
+        _log(f"SFX: alarm ({len(_sfx_cache['alarm'])/SFX_SR:.2f}s)")
+        sd.play(_sfx_cache["alarm"], samplerate=SFX_SR)
+        sd.wait()
+    except Exception as e:
+        _log(f"SFX ERR alarm: {e}")
+
+def _timer_thread(seconds, message=None):
+    """Thread qui attend N secondes puis sonne + TTS. Annulable via cancel_event."""
+    global _timer_id_counter
+    cancel_evt = threading.Event()
+    with _timer_lock:
+        _timer_id_counter += 1
+        timer_id = _timer_id_counter
+    label = message or f"timer de {_format_duration(seconds)}"
+    entry = {"id": timer_id, "label": label, "end": time.time() + seconds, "cancel": cancel_evt}
+    with _timer_lock:
+        _active_timers.append(entry)
+    _log(f"TIMER: demarre #{timer_id} — {label} ({seconds}s)")
+    # Attente annulable (poll toutes les 0.5s)
+    cancelled = cancel_evt.wait(timeout=seconds)
+    # Retirer des actifs
+    with _timer_lock:
+        _active_timers[:] = [t for t in _active_timers if t["id"] != timer_id]
+    if cancelled:
+        _log(f"TIMER: #{timer_id} annule — {label}")
+        return
+    _log(f"TIMER: #{timer_id} termine — {label}")
+    _priority_evt.set()
+    try:
+        _play_alarm()
+        if message:
+            _tts_wait(f"David ! Rappel : {message}")
+        else:
+            _tts_wait(f"David ! Le timer de {_format_duration(seconds)} est termine !")
+    finally:
+        _priority_evt.clear()
+
+def _format_duration(seconds):
+    """Formate une duree en texte FR naturel."""
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    parts = []
+    if h > 0: parts.append(f"{h} heure{'s' if h > 1 else ''}")
+    if m > 0: parts.append(f"{m} minute{'s' if m > 1 else ''}")
+    if s > 0 and h == 0: parts.append(f"{s} seconde{'s' if s > 1 else ''}")
+    return " et ".join(parts) if parts else "0 secondes"
+
+def _parse_duration(text):
+    """Extrait une duree en secondes depuis le texte. Retourne None si pas de duree."""
+    t = text.lower()
+    total = 0
+    found = False
+    # Heures
+    m = re.search(r'(\d+)\s*(?:heure|heures|h)\b', t)
+    if m: total += int(m.group(1)) * 3600; found = True
+    # Minutes
+    m = re.search(r'(\d+)\s*(?:minute|minutes|min)\b', t)
+    if m: total += int(m.group(1)) * 60; found = True
+    # Secondes
+    m = re.search(r'(\d+)\s*(?:seconde|secondes|sec)\b', t)
+    if m: total += int(m.group(1)); found = True
+    # Cas simple "5 minutes" sans mot explicite mais avec un nombre seul
+    if not found:
+        m = re.search(r'(\d+)', t)
+        if m:
+            n = int(m.group(1))
+            # Heuristique : si le nombre est < 180, c'est probablement des minutes
+            if n > 0:
+                total = n * 60
+                found = True
+    return total if found and total > 0 else None
+
+def _fetch_meteo():
+    """Appelle Open-Meteo et retourne une phrase FR. Non bloquant pour le main thread."""
+    try:
+        req = urllib.request.Request(_METEO_URL, headers={"User-Agent": "Claudius/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        cur = data["current"]
+        temp = cur["temperature_2m"]
+        code = cur.get("weathercode", -1)
+        wind = cur.get("windspeed_10m", 0)
+        humidity = cur.get("relative_humidity_2m", 0)
+        desc = _WMO_CODES.get(code, "conditions inconnues")
+        # Construire la phrase
+        parts = [f"Il fait {temp:.0f} degres"]
+        parts.append(f"avec {desc}")
+        if wind > 20:
+            parts.append(f"et du vent a {wind:.0f} kilometres heure")
+        elif wind > 5:
+            parts.append(f"avec un vent leger a {wind:.0f} kilometres heure")
+        return ". ".join([", ".join(parts)])
+    except Exception as e:
+        _log(f"ERR meteo: {e}")
+        return "Desole, je n'arrive pas a recuperer la meteo."
+
+# --- Detection intent utilitaire ---
+
+_INTENT_HEURE = re.compile(
+    r'(?:quelle?\s+heure|heure\s+(?:est|qu)|l\'heure|il\s+est\s+quelle|donne.*heure'
+    r'|dis.*heure|heure\s+il\s+est|est.il)', re.IGNORECASE
+)
+_INTENT_DATE = re.compile(
+    r'(?:quel\s+jour|quelle\s+date|on\s+est\s+(?:le\s+)?(?:quel|combien)|date\s+(?:d\')?aujourd'
+    r'|jour\s+(?:on\s+est|sommes)|quel.*date|dis.*jour|le\s+combien)', re.IGNORECASE
+)
+_INTENT_METEO = re.compile(
+    r'(?:meteo|m[eé]t[eé]o|quel\s+temps|temps\s+(?:fait|qu)|il\s+fait\s+(?:combien|chaud|froid|beau)'
+    r'|temperature|dehors|pleut|pluie|neige|ensoleill)', re.IGNORECASE
+)
+_INTENT_TIMER = re.compile(
+    r'(?:met[s]?[\s-]+(?:(?:moi\s+)?(?:un\s+)?)?(?:timer|minuteur|chrono)|lance[\s-]+(?:(?:moi\s+)?(?:un\s+)?)?(?:timer|minuteur)'
+    r'|timer\s+(?:de\s+)?\d|minuteur\s+(?:de\s+)?\d|compte[\s-]+(?:a\s+)?rebours'
+    r'|(?:un\s+)?timer\s+de\s+\d|(?:un\s+)?minuteur\s+de\s+\d)', re.IGNORECASE
+)
+_INTENT_RAPPEL = re.compile(
+    r'(?:rappel(?:le)?[\s-]?moi|n\'oublie\s+pas|pense\s+[aà]\s+me\s+rappeler|fais[\s-]?moi\s+penser)',
+    re.IGNORECASE
+)
+_INTENT_TIMERS_STATUS = re.compile(
+    r'(?:combien\s+(?:de\s+)?(?:timer|minuteur|temps)|timer[s]?\s+(?:en\s+cours|actif)|il\s+reste\s+combien'
+    r'|temps\s+restant|reste.*timer|reste.*minuteur|timer.*reste|oubli.*timer|timer.*oubli)', re.IGNORECASE
+)
+_INTENT_CANCEL_TIMER = re.compile(
+    r'(?:annul(?:e|er?)\s+(?:le\s+)?(?:timer|minuteur|rappel)|stop(?:pe)?\s+(?:le\s+)?(?:timer|minuteur)'
+    r'|coupe\s+(?:le\s+)?(?:timer|minuteur)|arr[eê]te\s+(?:le\s+)?(?:timer|minuteur))',
+    re.IGNORECASE
+)
+
+def _extract_rappel_message(text):
+    """Extrait le message du rappel. Ex: 'rappelle moi de sortir le linge dans 10 min' -> 'sortir le linge'"""
+    t = text.lower()
+    # Pattern "rappelle moi de/que/d' ... dans/en X minutes"
+    m = re.search(r'(?:rappel(?:le)?[\s-]?moi|fais[\s-]?moi\s+penser)\s+(?:de\s+|que\s+|d\'|qu\')?(.+?)(?:\s+dans\s+|\s+en\s+|\s+d\'ici\s+)', t)
+    if m:
+        return m.group(1).strip()
+    # Pattern "dans X minutes rappelle moi de ..."
+    m = re.search(r'(?:rappel(?:le)?[\s-]?moi|fais[\s-]?moi\s+penser)\s+(?:de\s+|que\s+|d\'|qu\')?(.+)', t)
+    if m:
+        msg = m.group(1).strip()
+        # Retirer la duree a la fin si presente
+        msg = re.sub(r'\s+dans\s+\d+.*$', '', msg)
+        msg = re.sub(r'\s+en\s+\d+.*$', '', msg)
+        return msg.strip() if msg.strip() else None
+    return None
+
+def _check_utility_command(text):
+    """Verifie si le texte est une commande utilitaire.
+    Retourne la reponse TTS (str) si oui, None sinon."""
+    t = text.lower().strip()
+
+    # --- Heure ---
+    if _INTENT_HEURE.search(t):
+        now = time.strftime("%H heures %M")
+        _log(f"UTIL: heure -> {now}")
+        return f"Il est {now}."
+
+    # --- Date ---
+    if _INTENT_DATE.search(t):
+        try:
+            jour = time.strftime("%A %d %B %Y")
+        except Exception:
+            jour = time.strftime("%d/%m/%Y")
+        _log(f"UTIL: date -> {jour}")
+        return f"On est le {jour}."
+
+    # --- Meteo ---
+    if _INTENT_METEO.search(t):
+        _log("UTIL: meteo demandee")
+        return _fetch_meteo()
+
+    # --- Annuler timer ---
+    if _INTENT_CANCEL_TIMER.search(t):
+        with _timer_lock:
+            count = len(_active_timers)
+            for t_info in _active_timers:
+                t_info["cancel"].set()  # signal le thread pour qu'il s'arrete
+            _active_timers.clear()
+        if count > 0:
+            return f"J'ai annule {count} timer{'s' if count > 1 else ''}."
+        else:
+            return "Il n'y a aucun timer en cours."
+
+    # --- Status timers ---
+    if _INTENT_TIMERS_STATUS.search(t):
+        with _timer_lock:
+            if not _active_timers:
+                return "Aucun timer en cours."
+            parts = []
+            now = time.time()
+            for t_info in _active_timers:
+                remaining = max(0, t_info["end"] - now)
+                parts.append(f"{t_info['label']}, encore {_format_duration(int(remaining))}")
+            return "Timers en cours : " + ". ".join(parts) + "."
+
+    # --- Rappel (avant timer car rappel inclut une duree) ---
+    if _INTENT_RAPPEL.search(t):
+        duration = _parse_duration(t)
+        message = _extract_rappel_message(text)  # text original (pas lowercase)
+        if duration and message:
+            threading.Thread(target=_timer_thread, args=(duration, message), daemon=True).start()
+            return f"C'est note, je te rappelle de {message} dans {_format_duration(duration)}."
+        elif duration:
+            threading.Thread(target=_timer_thread, args=(duration, "rappel"), daemon=True).start()
+            return f"OK, rappel dans {_format_duration(duration)}."
+        else:
+            return None  # pas de duree detectee -> laisser Haiku gerer
+
+    # --- Timer ---
+    if _INTENT_TIMER.search(t):
+        duration = _parse_duration(t)
+        if duration:
+            threading.Thread(target=_timer_thread, args=(duration,), daemon=True).start()
+            return f"Timer de {_format_duration(duration)}, c'est parti !"
+        else:
+            return None  # pas de duree -> Haiku
+
+    return None  # pas une commande utilitaire
+
 # --- LLM Claude Haiku via API ---
 
 _SYSTEM_FALLBACK = (
@@ -841,6 +1111,21 @@ def _handle_voice(text):
     _log("VOICE -> Claude: " + text[:60])
     if not _speaking.is_set():
         _play_sfx("listen", blocking=True)  # bip seulement si pas en train de parler
+    # --- Ch8 : commandes utilitaires (heure, meteo, timer, rappel) ---
+    util_reply = _check_utility_command(text)
+    if util_reply:
+        _log("UTIL reply: " + util_reply[:80])
+        try:
+            ts = time.strftime("%H:%M:%S")
+            with open(TRANSCRIPT_FILE, "a", encoding="utf-8") as _tf:
+                _tf.write(f"[{ts}] Claudius: {util_reply}\n")
+        except Exception:
+            pass
+        gesture = _gesture_for(util_reply)
+        if gesture:
+            threading.Thread(target=_run, args=(gesture,), daemon=True).start()
+        _tts_wait(util_reply)
+        return
     # --- Vision : si demande vision, trigger snap et attendre ---
     snap_path = None
     if _is_vision_request(text):

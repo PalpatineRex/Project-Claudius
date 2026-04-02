@@ -12,13 +12,7 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 ## 🎯 Fonctionnalités
 
 - **Reconnaissance vocale** — faster-whisper small CUDA float16, VAD adaptatif, ~0.5s
-- **Wake word "Claudius"** — Fuzzy match phonétique (supporte "Hey Claudius", "Salut Claudius", etc.), initial_prompt Whisper
-- **Réactions sonores** — 4 SFX synthétiques numpy (boot jingle, presence chime, listen beep, wake chime), cache RAM, skip auto si TTS parle
-- **Mémoire longue** — Résumé automatique des sessions (Haiku) sauvegardé dans `memory.json`, 15 derniers souvenirs injectés dans le prompt, trigger sur départ (PRESENT→ABSENT), anti-doublon, thread non-bloquant
-- **Vision par commande vocale** — "Claudius, regarde !" → snap Kinect RGB → Claude Haiku multimodal (image+texte) → réponse contextuelle TTS
-- **Détection de présence** — Depth stream Kinect continu, greetings intelligents (heure, premier retour vs re-retour), cooldown anti-spam
-- **Watchdog Voice + Motor** — Bridge surveille Voice et Motor daemon, relance auto si crash/freeze
-- **Intelligence conversationnelle** — Claude Haiku API, mémoire 6 échanges, contexte enrichi dynamique, mémoire longue inter-sessions (15 souvenirs)
+- **Intelligence conversationnelle** — Claude Haiku API, mémoire 6 échanges, contexte enrichi dynamique
 - **Synthèse vocale blend** — Piper TTS Jessica+SIWIS, blend spectral DTW (phase Jessica, magnitudes mixées, consonnes préservées), ~1.1s total
 - **Re-accentuation FR** — Correction automatique des accents manquants avant TTS (clavier QWERTY-friendly)
 - **Gestes physiques** — Moteur tilt Kinect : oui, non, blink, hello, think, reset
@@ -26,6 +20,8 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 - **Audio intelligent** — sounddevice cross-platform, mute auto quand vidéo/musique joue (pycaw)
 - **Anti-hallucination** — Triple filtre : logprob, keywords, pré-filtre RMS
 - **Mode veille** — sleep/wake via commande
+- **Réactions sonores** — SFX synthétiques numpy (boot jingle, presence chime, listen beep, wake chime, alarm timer), cache RAM
+- **Commandes utilitaires** — Heure, date, météo (Open-Meteo), timer, rappel — détection locale, zéro latence API
 - **Transcript live** — Interface web temps réel sur `localhost:5005`
 - **Chemins portables** — Env vars `CLAUDIUS_*`, tout fonctionne depuis n'importe quel dossier
 - **Démarrage automatique** — Se lance au boot Windows
@@ -36,17 +32,17 @@ Claudius est un compagnon de bureau physique : il écoute, réfléchit, répond 
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                      CLAUDIUS v3.5                               │
+│                      CLAUDIUS v3                                 │
 ├───────────────┬──────────────┬───────────────────┬───────────────┤
 │  KinectVoice  │ KinectBridge │ Piper TTS Blend   │ KinectMotor   │
-│  (Oreilles)   │  (Cerveau)   │    (Bouche)       │(Corps+Vision) │
+│  (Oreilles)   │  (Cerveau)   │    (Bouche)       │   (Corps)     │
 ├───────────────┼──────────────┼───────────────────┼───────────────┤
 │ faster-whisper │ Claude Haiku │ Jessica+SIWIS     │ C# / SDK 1.8  │
-│ small CUDA    │ API Anthropic│ DTW spectral      │ Daemon continu│
-│ Bird UM1 mic  │ Vision multi │ Blend spectral    │ Depth presence│
-│ VAD adaptatif │ Contexte .txt│ Phase Jessica     │ Snap RGB 640  │
-│ Halluc. filter│ Memory JSON  │ HF preserve       │ Gestes auto   │
-│ pycaw monitor │ 6 échanges   │ Energy conserv.   │ motor_cmd.txt │
+│ small CUDA    │ API Anthropic│ DTW spectral      │ Moteur tilt   │
+│ Bird UM1 mic  │ Contexte .txt│ Blend spectral    │ Motor lock    │
+│ VAD adaptatif │ 6 échanges   │ Phase Jessica     │ Gestes auto   │
+│ Halluc. filter│ Mémoire conv.│ HF preserve       │               │
+│ pycaw monitor │ Re-accent FR │ Energy conserv.   │               │
 └───────────────┴──────────────┴───────────────────┴───────────────┘
 ```
 
@@ -57,22 +53,16 @@ Micro Bird UM1
     │
     ▼
 KinectVoice.py
-    ├─ Wake word "Claudius" (fuzzy match phonétique)
-    ├─ VAD adaptatif : max(500, ambiant × 1.5)
-    ├─ faster-whisper small FR (CUDA float16, initial_prompt, ~0.5s)
+    ├─ VAD adaptatif : max(1000, ambiant × 1.5)
+    ├─ faster-whisper small FR (CUDA float16, ~0.5s)
     ├─ Filtre hallucinations (logprob + keywords + 2 mots min)
     ├─ Audio monitor pycaw (mute auto si media joue)
-    ├─ Heartbeat toutes les 10s (pour watchdog)
     └─ Écrit VOICE:texte → cmd.txt
                 │
                 ▼
          KinectBridge.py
-                ├─ Watchdog Voice + Motor (PID + heartbeat, relance auto)
-                ├─ Mémoire longue : memory.json (15 souvenirs injectés, résumé auto au départ)
-                ├─ SFX listen beep (accusé réception, skip si TTS parle)
                 ├─ think (geste Kinect immédiat)
-                ├─ Vision : si mot-clé détecté → snap → appel multimodal
-                ├─ Claude Haiku API (~1-2s, contexte enrichi, multimodal si snap)
+                ├─ Claude Haiku API (~1-2s, contexte enrichi)
                 ├─ Geste selon réponse [thread parallèle]
                 └─ TTS Blend Pipeline :
                     ├─ Re-accentuation FR (tete → tête, etc.)
@@ -90,7 +80,7 @@ KinectVoice.py
                         sounddevice → Haut-parleurs (RAM, zéro fichier)
 ```
 
-**Latence totale** : ~2-3s de fin de parole à début de réponse.
+**Latence totale** : ~2.5-3.5s de fin de parole à début de réponse.
 
 ---
 
@@ -120,18 +110,13 @@ Le système de voix utilise deux modèles Piper TTS (Jessica et SIWIS) fusionné
 
 ```
 Project-Claudius/
-├── KinectBridge.py      — Cerveau : watcher, API Haiku, TTS blend, vision multimodal, watchdog Voice+Motor
-├── KinectVoice.py       — Oreilles : wake word + VAD adaptatif + faster-whisper CUDA + filtres + heartbeat
+├── KinectBridge.py      — Cerveau : watcher, API Haiku, TTS blend, re-accent, auto-blink
+├── KinectVoice.py       — Oreilles : VAD adaptatif + faster-whisper CUDA + filtres
 ├── KinectTTS.py         — Bouche standalone : Piper / pyttsx3 / edge-tts (fallback)
-├── KinectMotor.cs       — Corps : C# SDK Kinect 1.8, daemon depth/presence, snap RGB, gestes via motor_cmd.txt
+├── KinectMotor.cs       — Corps : C# SDK Kinect 1.8, moteur tilt + snap RGB
 ├── KinectTranscript.py  — Serveur Flask transcript temps réel (localhost:5005)
 ├── KinectBridge.bat     — Script de démarrage (Bridge + Voice + Transcript)
-├── restart_all.py       — Kill + relaunch propre (Motor + Bridge + Voice)
-├── deploy.py            — Déploiement workbench → C:\Kinect\
 ├── claudius_context.txt — Contexte enrichi pour Haiku (projets, personnalité)
-├── memory.json          — Mémoire longue : résumés des sessions passées (max 50)
-├── audio_ignore.txt     — Process exclus du mute audio (1 par ligne)
-├── presence_config.txt  — Config détection présence (distance, seuils, cooldown)
 ├── voice_blend/         — WAV de référence et tests du blend
 ├── backup/              — Backups datés de chaque session
 ├── README.md
@@ -220,13 +205,13 @@ python KinectTranscript.py &
 | Appel API Claude Haiku | ~1-2s |
 | Synthèse Piper dual (Jessica+SIWIS parallèle) | ~1.0s |
 | Blend spectral v3d | ~0.1s |
-| **Latence totale** (fin parole → début réponse) | **~2-3s** |
+| **Latence totale** (fin parole → début réponse) | **~2.5-3.5s** |
 
 | Ressource | Usage |
 |-----------|-------|
 | VRAM GPU | ~1.5 GB (Whisper + 2× Piper ONNX) |
 | RAM totale | ~1.2 GB |
-| Coût API mensuel (50 msg/jour) | ~0.70€ |
+| Coût API mensuel (50 msg/jour) | ~0.40€ |
 
 ---
 
@@ -234,11 +219,8 @@ python KinectTranscript.py &
 
 | Version | Date | Changements |
 |---------|------|-------------|
-| **v3.5** | **2026-04-01** | **Ch7 Réactions sonores** : 4 SFX synthétiques numpy+sounddevice (boot jingle Do-Mi-Sol+accord 1s, presence chime harmoniques 0.4s, listen beep 2 bips 0.25s, wake sweep+note 0.6s). Cache RAM `_sfx_cache`, non-bloquant par défaut (thread), bloquant pour listen+presence. Skip auto si TTS parle (`_speaking`). Boot jingle retardé 5s pour ne pas polluer calibration Voice. `SFX_VOLUME=0.3`. |
-| **v3.4** | **2026-04-01** | **Ch6 Mémoire longue** : `memory.json` stocke les résumés de sessions (max 50, 15 injectés dans le prompt). Trigger auto au départ (PRESENT→ABSENT, min 2 échanges) → Haiku résume en 1-2 phrases. Cache intelligent `_load_system_prompt()` (recharge si context.txt ou memory.json changent). Thread non-bloquant, anti-doublon `_memory_saved_this_session`. ~$0.30/mois additionnel. |
-| **v3.3** | **2026-03-31** | **Ch5 Vision snap** : commande vocale ("regarde", "tu vois") → snap Kinect RGB → appel Claude Haiku multimodal unique (image base64 + transcription, max_tokens 150, timeout 20s) → TTS + enrichissement contexte conversation. **Ch4 Détection présence** : KinectMotor.exe daemon continu (depth 320×240, gestes via motor_cmd.txt, presence_config.txt hot-reload 30s), greetings intelligents (heure + premier retour vs re-retour, cooldown 1h, absence min 5min). **Watchdog Motor** : relance auto daemon si crash (max 10). **audio_ignore.txt** : fichier configurable pour exclure des apps du mute audio. **Calibration Voice** : attend audio inactif, sécurité seuil max 3000. **restart_all.py** : kill + relaunch propre. |
-| **v3.2** | **2026-03-28** | **Watchdog Voice** : thread Bridge surveille Voice (PID + heartbeat 10s), relance auto si crash/freeze, cooldown 60s, max 5 relances, reset 10min. **Wake word "Claudius"** : initial_prompt Whisper, fuzzy match phonétique partout dans la phrase (noyaux claud/clod/audic), support préfixe (Hey/Oui/Salut Claudius). **Latence réduite** : SILENCE_AFTER 1.5→0.8s, MIN_DURATION 0.8→0.5s, seuil micro 1000→500. |
-| v3.0 | 2026-03-19 | **Blend spectral v3d** : DTW cosine mel features, warp continu, STFT vectorisée, phase Jessica + magnitudes mixées, gate silence, HF preserve consonnes, détecteur transitoires, conservation énergie. Re-accentuation FR. sounddevice cross-platform. scipy importé au boot. Volume normalisé 31000. |
+| **v3.5** | **2026-04-02** | **Ch8 Commandes utilitaires** : détection intent locale (heure/date/météo/timer/rappel) avant appel Haiku — zéro latence API. Open-Meteo (Lavelanet). Timers annulables (threading.Event). SFX alarm. Regex robustes tolérants Whisper. **Ch7 Réactions sonores** : 4 SFX synthétiques numpy+sounddevice (boot, presence, listen, wake), cache RAM. **Ch6 Mémoire longue** : résumé sessions via Haiku, memory.json, injection system prompt. |
+| v3.3 | 2026-03-31 | **Ch5 Vision snap** : commande vocale → Haiku multimodal base64+texte. **Ch4 Présence Kinect** : daemon Motor C#, depth stream, greetings intelligents (bonjour/retour, cooldown 1h, 5min absence min). Watchdog Motor. | : DTW cosine mel features, warp continu, STFT vectorisée, phase Jessica + magnitudes mixées, gate silence, HF preserve consonnes, détecteur transitoires, conservation énergie. Re-accentuation FR. sounddevice cross-platform. scipy importé au boot. Volume normalisé 31000. |
 | v2.5 | 2026-03-18 | Chemins portables (env vars CLAUDIUS_*), clé API fichier>env strip guillemets, CUDA auto-detect site.getsitepackages(), VAD adaptatif, pycaw audio monitor mute auto, system prompt cache mtime, log rotation 500. Premier blend Jessica+SIWIS (scipy.resample + spectral subtraction). |
 | v2.0 | 2026-03-18 | faster-whisper small CUDA float16, singleton PID, queue anti-flood, triple filtre hallucination, contexte enrichi dynamique |
 | v1.5 | 2026-03-12 | Migration Ollama → API Claude Haiku, Piper TTS Jessica GPU |
@@ -250,14 +232,13 @@ python KinectTranscript.py &
 ## 🗺️ Roadmap
 
 - [x] Watchdog Voice crash quand Bridge est relancé
-- [x] Wake word "Claudius" avec fuzzy match
-- [x] Détection de présence (depth stream Kinect, daemon C#)
-- [x] Vision — snap via commande vocale → Claude Haiku multimodal
-- [x] Watchdog Motor — relance auto daemon si crash
-- [x] Mémoire longue — résumés de sessions, souvenirs inter-sessions
-- [x] Réactions sonores — SFX synthétiques (boot, présence, listen, wake)
-- [ ] Bras animatroniques (ATX power supply, PCA9685 servos)
+- [x] Détection de présence (skeleton tracking / depth)
+- [x] Vision — snap auto → LLM vision
+- [x] Mémoire longue — résumé sessions
+- [x] Réactions sonores — SFX synthétiques
+- [x] Commandes utilitaires — heure, météo, timer, rappels
 - [ ] Interface web dashboard
+- [ ] Bras imprimés 3D (servos + résine)
 - [ ] Voix custom (entraîner un modèle TTS perso)
 
 ---
