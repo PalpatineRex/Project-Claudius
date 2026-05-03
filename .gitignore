@@ -29,3 +29,5 @@ api_key.txt
 *.lock
 *.pid
 transcript.txt
+
+deepseek_key.txt

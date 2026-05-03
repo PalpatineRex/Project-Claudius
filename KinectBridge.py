@@ -2,7 +2,7 @@
 KinectBridge.py - Pont principal Project Claudius
 Tete animatronique Kinect Xbox 360.
 
-LLM   : Claude Haiku via API Anthropic
+LLM   : DeepSeek V4 Flash (texte) + Claude Haiku (vision)
 TTS   : Piper Jessica+SIWIS blend spectral (CUDA)
 Audio : sounddevice (cross-platform, RAM)
 Moteur: KinectMotor.exe (oui/non/blink/hello/think/reset/snap)
@@ -45,8 +45,23 @@ MAX_MEMORIES     = 15  # nb de souvenirs gardes dans le contexte
 LOG_MAX_LINES    = 2000
 _log_count       = 0
 
+# --- DeepSeek V4 Flash (provider principal, texte) ---
+DEEPSEEK_URL      = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_API_KEY  = ""
+for _p in [os.path.join(_KINECT_DIR, "deepseek_key.txt"), os.path.join(_DATA_DIR, "deepseek_key.txt")]:
+    try:
+        _k = open(_p, "r").read().strip().strip('"').strip("'")
+        if _k:
+            DEEPSEEK_API_KEY = _k
+            break
+    except Exception:
+        pass
+if not DEEPSEEK_API_KEY:
+    DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip().strip('"').strip("'")
+DEEPSEEK_MODEL    = "deepseek-v4-flash"
+
+# --- Anthropic Haiku (fallback vision uniquement) ---
 ANTHROPIC_URL     = "https://api.anthropic.com/v1/messages"
-# Cle API : fichier local (prioritaire) > env var (fallback)
 ANTHROPIC_API_KEY = ""
 for _p in [os.path.join(_KINECT_DIR, "api_key.txt"), os.path.join(_DATA_DIR, "api_key.txt")]:
     try:
@@ -1026,8 +1041,10 @@ MAX_HISTORY = 6  # nb d'echanges (user+assistant) gardes en memoire
 
 def _ask_claude(text, image_path=None):
     global _conversation_history
+    use_vision = image_path is not None
     # Construire le contenu du message user
-    if image_path:
+    if use_vision:
+        # Vision = Haiku (DeepSeek V4 Flash ne supporte pas les images)
         try:
             img_b64 = _encode_image_b64(image_path)
             user_content = [
@@ -1045,6 +1062,7 @@ def _ask_claude(text, image_path=None):
         except Exception as e:
             _log(f"ERR vision encode: {e}")
             user_content = text
+            use_vision = False
     else:
         user_content = text
     with _history_lock:
@@ -1052,7 +1070,7 @@ def _ask_claude(text, image_path=None):
         messages = list(_conversation_history)
     # System prompt enrichi si vision
     system = _load_system_prompt()
-    if image_path:
+    if use_vision:
         system += (
             "\n\n[VISION] Tu vois une image de ta camera Kinect. "
             "Ne decris PAS ce que tu vois sauf si David te le demande explicitement. "
@@ -1060,19 +1078,50 @@ def _ask_claude(text, image_path=None):
             "Par exemple si David te montre un objet, parle de l'objet, pas de la piece."
         )
     try:
-        payload = json.dumps({
-            "model": ANTHROPIC_MODEL,
-            "max_tokens": 150 if image_path else 80,
-            "system": system,
-            "messages": messages
-        }).encode("utf-8")
-        req = urllib.request.Request(ANTHROPIC_URL, data=payload, method="POST", headers={
-            "Content-Type": "application/json",
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01"
-        })
-        with urllib.request.urlopen(req, timeout=20 if image_path else 15) as resp:
-            reply = json.loads(resp.read().decode())["content"][0]["text"].strip()
+        if use_vision:
+            # --- Haiku (vision multimodale) ---
+            payload = json.dumps({
+                "model": ANTHROPIC_MODEL,
+                "max_tokens": 150,
+                "system": system,
+                "messages": messages
+            }).encode("utf-8")
+            req = urllib.request.Request(ANTHROPIC_URL, data=payload, method="POST", headers={
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01"
+            })
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                reply = json.loads(resp.read().decode())["content"][0]["text"].strip()
+            _log("LLM: Haiku (vision)")
+        else:
+            # --- DeepSeek V4 Flash (texte) ---
+            # Format OpenAI ChatCompletions (system = premier message role:system)
+            ds_messages = [{"role": "system", "content": system}]
+            for m in messages:
+                c = m["content"]
+                # Si contenu multimodal (liste de blocs), extraire le texte
+                if isinstance(c, list):
+                    c = " ".join(b.get("text", "") for b in c if b.get("type") == "text").strip()
+                    if not c:
+                        continue
+                ds_messages.append({"role": m["role"], "content": c})
+            payload = json.dumps({
+                "model": DEEPSEEK_MODEL,
+                "max_tokens": 250,
+                "messages": ds_messages,
+                "temperature": 0.7
+            }).encode("utf-8")
+            req = urllib.request.Request(DEEPSEEK_URL, data=payload, method="POST", headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
+            })
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+                reply = data["choices"][0]["message"]["content"].strip()
+                # DeepSeek thinking mode : retirer les balises <think>...</think>
+                reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
+            _log("LLM: DeepSeek V4 Flash")
         with _history_lock:
             _conversation_history.append({"role": "assistant", "content": reply})
             # Garder seulement les MAX_HISTORY derniers echanges (paires user/assistant)
@@ -1080,7 +1129,7 @@ def _ask_claude(text, image_path=None):
                 _conversation_history = _conversation_history[-(MAX_HISTORY * 2):]
         return reply
     except Exception as e:
-        _log("ERR claude: " + str(e))
+        _log("ERR llm: " + str(e))
         with _history_lock:
             # Retirer le message user si la requete a echoue
             if _conversation_history and _conversation_history[-1]["role"] == "user":
@@ -1567,9 +1616,11 @@ if __name__ == "__main__":
             p = os.path.join(sp, sub)
             if os.path.isdir(p):
                 os.environ["PATH"] = p + ";" + os.environ.get("PATH", "")
+    if not DEEPSEEK_API_KEY:
+        _log("ERREUR: cle DeepSeek absente (deepseek_key.txt)")
     if not ANTHROPIC_API_KEY:
-        _log("ERREUR: cle API absente (C:\\Kinect\\api_key.txt)")
-    _log("=== KinectBridge demarrage (Claude Haiku) ===")
+        _log("ATTENTION: cle Anthropic absente — vision desactivee")
+    _log("=== KinectBridge demarrage (DeepSeek V4 Flash + Haiku vision) ===")
     _launch_motor_daemon()
     threading.Thread(target=watch_cmd, daemon=True).start()
     threading.Thread(target=_auto_blink, daemon=True).start()
