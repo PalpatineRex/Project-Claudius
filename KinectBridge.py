@@ -1,63 +1,88 @@
 """
-KinectBridge.py - Pont principal Project Claudius
-Tete animatronique Kinect Xbox 360.
-
-LLM   : Claude Haiku via API Anthropic
+KinectBridge.py v4 — Pont principal Project Claudius (optimisé)
+LLM   : DeepSeek V4 Flash (texte) + Claude Haiku (vision)
 TTS   : Piper Jessica+SIWIS blend spectral (CUDA)
-Audio : sounddevice (cross-platform, RAM)
+Audio : sounddevice
 Moteur: KinectMotor.exe (oui/non/blink/hello/think/reset/snap)
-Cmds  : oui/non/blink/hello/think/reset/snap/sleep/wake + VOICE:texte
 
-https://github.com/PalpatineRex/Project-Claudius
+Utilise les modules :
+  - claudius_sfx.py     → sons synthétiques pré-calculés
+  - claudius_utils.py   → log, reaccentuation, commandes utiles
+  - claudius_blend.py   → blend spectral DTW
 """
-import subprocess, os, time, threading, random, json, sys, re
+import os, sys, time, json, threading, re, base64, glob, subprocess
 import urllib.request
 import numpy as np
 import sounddevice as sd
-try:
-    from scipy.ndimage import uniform_filter1d as _smooth1d
-except ImportError:
-    _smooth1d = None
 
-# --- Chemins : relatifs au script, overridables par env ---
+from claudius_sfx import preload_all as sfx_preload, play as sfx_play
+from claudius_utils import log, reaccentuate, check_utility
+from claudius_utils import start_timer as util_start_timer
+from claudius_blend import synth_both
+
+# ====================================================================
+# CHEMINS
+# ====================================================================
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_DATA_DIR = os.environ.get("CLAUDIUS_DATA_DIR", _SCRIPT_DIR)
 _KINECT_DIR = os.environ.get("CLAUDIUS_KINECT_DIR", _SCRIPT_DIR)
-_DATA_DIR   = os.environ.get("CLAUDIUS_DATA_DIR", _SCRIPT_DIR)
 
-MOTOR_EXE        = os.path.join(_KINECT_DIR, "KinectMotor.exe")
-TTS_PY           = os.path.join(_KINECT_DIR, "KinectTTS.py")
-CMD_FILE         = os.path.join(_DATA_DIR, "cmd.txt")
-LOG_FILE         = os.path.join(_DATA_DIR, "kinect.log")
-TTS_LOCK_FILE    = os.path.join(_DATA_DIR, "tts_speaking.lock")
-TRANSCRIPT_FILE  = os.path.join(_DATA_DIR, "transcript.txt")
-SLEEP_FILE       = os.path.join(_DATA_DIR, "claudius_sleep.lock")
-PYTHON           = os.environ.get("CLAUDIUS_PYTHON", sys.executable)
-PIPER_MODEL      = os.path.join(_KINECT_DIR, "piper", "fr_FR-upmc-medium.onnx")
+MOTOR_EXE = os.path.join(_KINECT_DIR, "KinectMotor.exe")
+CMD_FILE = os.path.join(_DATA_DIR, "cmd.txt")
+LOG_FILE = os.path.join(_DATA_DIR, "kinect.log")
+TRANSCRIPT_FILE = os.path.join(_DATA_DIR, "transcript.txt")
+TTS_LOCK_FILE = os.path.join(_DATA_DIR, "tts_speaking.lock")
+SLEEP_FILE = os.path.join(_DATA_DIR, "claudius_sleep.lock")
+MOTOR_CMD_FILE = os.path.join(_DATA_DIR, "motor_cmd.txt")
+PRESENCE_FILE = os.path.join(_DATA_DIR, "presence.txt")
+MEMORY_FILE = os.path.join(_DATA_DIR, "memory.json")
+CONTEXT_FILE = os.path.join(_DATA_DIR, "claudius_context.txt")
+VOICE_PID_FILE = os.path.join(_DATA_DIR, "voice.pid")
+VOICE_HEARTBEAT = os.path.join(_DATA_DIR, "voice_heartbeat.txt")
+VOICE_SCRIPT = os.path.join(_KINECT_DIR, "KinectVoice.py")
+BRIDGE_PID_FILE = os.path.join(_DATA_DIR, "bridge.pid")
+MAX_MEMORIES = 15
+LOG_MAX_LINES = 2000
+
+PYTHON = os.environ.get("CLAUDIUS_PYTHON", sys.executable)
+PIPER_MODEL = os.path.join(_KINECT_DIR, "piper", "fr_FR-upmc-medium.onnx")
 PIPER_MODEL_JSON = os.path.join(_KINECT_DIR, "piper", "fr_FR-upmc-medium.onnx.json")
-PIPER_MODEL2     = os.path.join(_KINECT_DIR, "piper", "siwis", "fr_FR-siwis-medium.onnx")
-PIPER_MODEL2_JSON= os.path.join(_KINECT_DIR, "piper", "siwis", "fr_FR-siwis-medium.onnx.json")
-BLEND_RATIO      = 0.5  # 0.0=Jessica pure, 1.0=SIWIS pure
-CONTEXT_FILE     = os.path.join(_DATA_DIR, "claudius_context.txt")
-LOG_MAX_LINES    = 2000
-_log_count       = 0
+PIPER_MODEL2 = os.path.join(_KINECT_DIR, "piper", "siwis", "fr_FR-siwis-medium.onnx")
+PIPER_MODEL2_JSON = os.path.join(_KINECT_DIR, "piper", "siwis", "fr_FR-siwis-medium.onnx.json")
 
-ANTHROPIC_URL     = "https://api.anthropic.com/v1/messages"
-# Cle API : fichier local (prioritaire) > env var (fallback)
-ANTHROPIC_API_KEY = ""
-for _p in [os.path.join(_KINECT_DIR, "api_key.txt"), os.path.join(_DATA_DIR, "api_key.txt")]:
-    try:
-        _k = open(_p, "r").read().strip().strip('"').strip("'")
-        if _k:
-            ANTHROPIC_API_KEY = _k
-            break
-    except Exception:
-        pass
-if not ANTHROPIC_API_KEY:
-    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip().strip('"').strip("'")
-ANTHROPIC_MODEL   = "claude-haiku-4-5-20251001"
-BRIDGE_PID_FILE   = os.path.join(_DATA_DIR, "bridge.pid")
+# ====================================================================
+# CLÉS API
+# ====================================================================
+def _load_key(filenames):
+    for f in filenames:
+        try:
+            with open(f, "r") as fh:
+                k = fh.read().strip().strip('"').strip("'")
+            if k:
+                return k
+        except Exception:
+            pass
+    return ""
 
-# --- Singleton Bridge ---
+DEEPSEEK_API_KEY = _load_key([
+    os.path.join(_KINECT_DIR, "deepseek_key.txt"),
+    os.path.join(_DATA_DIR, "deepseek_key.txt"),
+    os.environ.get("DEEPSEEK_API_KEY", "")
+])
+ANTHROPIC_API_KEY = _load_key([
+    os.path.join(_KINECT_DIR, "api_key.txt"),
+    os.path.join(_DATA_DIR, "api_key.txt"),
+    os.environ.get("ANTHROPIC_API_KEY", "")
+])
+
+DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+
+# ====================================================================
+# SINGLETON
+# ====================================================================
 def _enforce_singleton():
     my_pid = os.getpid()
     if os.path.exists(BRIDGE_PID_FILE):
@@ -66,11 +91,10 @@ def _enforce_singleton():
             if old_pid != my_pid:
                 try:
                     import ctypes
-                    kernel32 = ctypes.windll.kernel32
-                    handle = kernel32.OpenProcess(1, False, old_pid)
-                    if handle:
-                        kernel32.TerminateProcess(handle, 0)
-                        kernel32.CloseHandle(handle)
+                    h = ctypes.windll.kernel32.OpenProcess(1, False, old_pid)
+                    if h:
+                        ctypes.windll.kernel32.TerminateProcess(h, 0)
+                        ctypes.windll.kernel32.CloseHandle(h)
                 except Exception:
                     pass
                 time.sleep(0.5)
@@ -79,361 +103,70 @@ def _enforce_singleton():
     with open(BRIDGE_PID_FILE, "w") as f:
         f.write(str(my_pid))
 
-# Nettoyage fichiers residuels au boot — appele dans __main__ apres singleton
 def _cleanup_boot():
-    for _f in (SLEEP_FILE, TTS_LOCK_FILE, CMD_FILE):
+    for f in (SLEEP_FILE, TTS_LOCK_FILE, CMD_FILE, MOTOR_CMD_FILE):
         try:
-            if os.path.exists(_f): os.remove(_f)
-        except Exception: pass
+            if os.path.exists(f):
+                os.remove(f)
+        except Exception:
+            pass
+    os.system("taskkill /f /im KinectMotor.exe >nul 2>nul")
+    time.sleep(1)
 
-# --- Etat global ---
-_piper_voice  = None
+# ====================================================================
+# ÉTAT GLOBAL
+# ====================================================================
+_piper_voice = None
 _piper_voice2 = None
-_piper_lock   = threading.Lock()
-_piper_ready  = threading.Event()
-_speaking     = threading.Event()
-_sleeping     = threading.Event()
-_motor_lock   = threading.Lock()
+_piper_lock = threading.Lock()
+_piper_ready = threading.Event()
+_speaking = threading.Event()
+_sleeping = threading.Event()
+_motor_lock = threading.Lock()
 _priority_evt = threading.Event()
+_motor_daemon_mode = False
+_motor_daemon_proc = None
+_conversation_history = []
+_history_lock = threading.Lock()
+MAX_HISTORY = 6
 
-# --- Log avec rotation ---
-
-def _log(msg):
-    global _log_count
-    line = "[" + time.strftime("%H:%M:%S") + "] " + msg
-    print(line, flush=True)
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-        _log_count += 1
-        if _log_count >= 500:
-            _log_count = 0
-            try:
-                size = os.path.getsize(LOG_FILE)
-                # ~80 chars/ligne * LOG_MAX_LINES = ~160KB. Si le fichier est petit, skip.
-                if size > LOG_MAX_LINES * 100:
-                    with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
-                        lines = f.readlines()
-                    if len(lines) > LOG_MAX_LINES:
-                        with open(LOG_FILE, "w", encoding="utf-8") as f:
-                            f.writelines(lines[-LOG_MAX_LINES:])
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-# --- Moteur Kinect ---
-
-def _run(cmd):
-    with _motor_lock:
-        try:
-            subprocess.call([MOTOR_EXE, cmd], creationflags=subprocess.CREATE_NO_WINDOW)
-            _log("OK:" + cmd)
-        except Exception as e:
-            _log("ERR _run " + cmd + ": " + str(e))
-
-def _run_snap():
-    _log("snap: debut")
-    with _motor_lock:
-        for attempt in range(3):
-            try:
-                result = subprocess.check_output(
-                    [MOTOR_EXE, "snap"], creationflags=subprocess.CREATE_NO_WINDOW,
-                    stderr=subprocess.DEVNULL, timeout=30
-                ).decode(errors="replace").strip()
-                _log("snap: " + result)
-                if (result.startswith("ERROR:") or result == "") and attempt < 2:
-                    time.sleep(2); continue
-                return result if result else None
-            except subprocess.TimeoutExpired:
-                _log("ERR snap: timeout"); return None
-            except Exception as e:
-                _log("ERR snap: " + str(e)); return None
-        return None
-
-# --- TTS Piper in-process ---
-
+# ====================================================================
+# TTS — PIPER + BLEND
+# ====================================================================
 def _load_piper_bg():
     global _piper_voice, _piper_voice2
     with _piper_lock:
         if _piper_voice is not None:
-            _piper_ready.set(); return
+            _piper_ready.set()
+            return
         try:
             from piper import PiperVoice
             t = time.time()
-            _log("Chargement Piper Jessica...")
+            log("Chargement Piper Jessica...", LOG_FILE, "PIPER")
             _piper_voice = PiperVoice.load(PIPER_MODEL, config_path=PIPER_MODEL_JSON, use_cuda=True)
-            _log(f"Jessica prete en {time.time()-t:.1f}s")
-            if os.path.exists(PIPER_MODEL2) and BLEND_RATIO > 0:
+            log(f"Jessica prete en {time.time()-t:.1f}s", LOG_FILE, "PIPER")
+
+            if os.path.exists(PIPER_MODEL2):
                 t2 = time.time()
-                _log("Chargement Piper SIWIS (blend)...")
+                log("Chargement Piper SIWIS (blend)...", LOG_FILE, "PIPER")
                 _piper_voice2 = PiperVoice.load(PIPER_MODEL2, config_path=PIPER_MODEL2_JSON, use_cuda=True)
-                _log(f"SIWIS prete en {time.time()-t2:.1f}s (blend {BLEND_RATIO:.0%})")
+                log(f"SIWIS prete en {time.time()-t2:.1f}s", LOG_FILE, "PIPER")
         except Exception as e:
-            _log("ERR Piper: " + str(e))
+            log(f"ERR Piper: {e}", LOG_FILE, "PIPER")
         finally:
             _piper_ready.set()
-
-def _blend_voices(j_audio, s_audio, ratio=0.5):
-    """Blend Jessica+SIWIS — DTW spectral + warp continu + blend spectral (fusion DBZ v3d).
-    
-    1. Features spectrales (mel bands 13) par segment 25ms → alignement phonemique
-    2. DTW cosine sur features → warping path
-    3. Warp continu np.interp → SIWIS alignee sample par sample
-    4. STFT vectorisee + blend magnitudes + phase Jessica
-    5. Gate silence + HF preserve consonnes + conservation energie
-    """
-    sr = 22050
-    seg_len = int(sr * 0.025)  # 25ms = 551 samples (2x plus fin)
-    n_mel = 13  # bandes spectrales pour l'alignement
-    
-    j = j_audio.astype(np.float64)
-    s = s_audio.astype(np.float64)
-    nj = max(1, len(j) // seg_len)
-    ns = max(1, len(s) // seg_len)
-    
-    # --- Features spectrales vectorisees (mel-like bands) ---
-    def _mel_features(audio, seg, n_bands):
-        n_segs = len(audio) // seg
-        if n_segs == 0:
-            return np.zeros((1, n_bands))
-        # Reshape + FFT batch (pas de boucle Python)
-        trimmed = audio[:n_segs * seg].reshape(n_segs, seg)
-        specs = np.abs(np.fft.rfft(trimmed, axis=1)) ** 2  # (n_segs, n_freq)
-        n_freq = specs.shape[1]
-        bsz = max(1, n_freq // n_bands)
-        # Somme par bande via reshape+sum (pad si necessaire)
-        pad_len = bsz * n_bands - n_freq
-        if pad_len > 0:
-            specs = np.pad(specs, ((0,0),(0,pad_len)))
-        feats = specs[:, :bsz * n_bands].reshape(n_segs, n_bands, bsz).sum(axis=2)
-        return feats
-    
-    fj = _mel_features(j, seg_len, n_mel)
-    fs = _mel_features(s, seg_len, n_mel)
-    
-    # Distance cosine (meilleure que L2 pour comparer des spectres)
-    fj_n = fj / (np.linalg.norm(fj, axis=1, keepdims=True) + 1e-10)
-    fs_n = fs / (np.linalg.norm(fs, axis=1, keepdims=True) + 1e-10)
-    dist = 1.0 - fj_n @ fs_n.T  # (nj, ns) cosine distance
-    
-    # --- DTW (acces array direct, evite min() Python) ---
-    cost = np.full((nj + 1, ns + 1), np.inf)
-    cost[0, 0] = 0.0
-    # Acces direct aux arrays pour eviter l'overhead Python de min()
-    cost_flat = cost.ravel()
-    stride = ns + 1
-    for i in range(1, nj + 1):
-        di = dist[i - 1]  # (ns,) distances pour cette ligne
-        base = i * stride
-        base_prev = (i - 1) * stride
-        for k in range(1, ns + 1):
-            d = di[k - 1]
-            c_diag = cost_flat[base_prev + k - 1]
-            c_up   = cost_flat[base_prev + k]
-            c_left = cost_flat[base + k - 1]
-            # Inline min — plus rapide que min() builtin sur 3 args
-            m = c_diag
-            if c_up < m: m = c_up
-            if c_left < m: m = c_left
-            cost_flat[base + k] = d + m
-    
-    # Backtrack
-    path = []
-    i, k = nj, ns
-    while i > 0 or k > 0:
-        if i > 0 and k > 0:
-            path.append((i-1, k-1))
-        elif i > 0:
-            path.append((i-1, max(0, k-1)))
-        else:
-            break
-        choices = []
-        if i > 0 and k > 0: choices.append((cost[i-1, k-1], i-1, k-1))
-        if i > 0:            choices.append((cost[i-1, k],   i-1, k))
-        if k > 0:            choices.append((cost[i, k-1],   i,   k-1))
-        _, ni, nk = min(choices)
-        if ni == i and nk == k:
-            break
-        i, k = ni, nk
-    path.reverse()
-    
-    # --- Warp continu ---
-    path_arr = np.array(path)  # (N, 2)
-    j_anchors = (path_arr[:, 0] + 0.5) * seg_len
-    s_anchors = (path_arr[:, 1] + 0.5) * seg_len
-    n_out = nj * seg_len
-    s_positions = np.clip(np.interp(np.arange(n_out, dtype=np.float64), j_anchors, s_anchors), 0, len(s) - 1)
-    s_idx = s_positions.astype(np.int64)
-    s_frac = s_positions - s_idx
-    s_idx_next = np.minimum(s_idx + 1, len(s) - 1)
-    s_warped = s[s_idx] * (1.0 - s_frac) + s[s_idx_next] * s_frac
-    
-    # --- Blend spectral ---
-    j_trimmed = j[:n_out]
-    n_fft = 2048
-    hop = 512
-    win = np.hanning(n_fft)
-    n_frames = (n_out - n_fft) // hop + 1
-    if n_frames < 1:
-        out = j_trimmed * (1.0 - ratio) + s_warped * ratio
-    else:
-        # STFT vectorisee
-        starts = np.arange(n_frames) * hop
-        idx = starts[:, None] + np.arange(n_fft)[None, :]
-        J = np.fft.rfft(j_trimmed[idx] * win[None, :], axis=1).T
-        S = np.fft.rfft(s_warped[idx] * win[None, :], axis=1).T
-        mag_j = np.abs(J)
-        mag_s = np.abs(S)
-        phase_j = np.angle(J)
-        n_bins = n_fft // 2 + 1
-        
-        # --- Gate ameliore : silence + transitions rapides ---
-        # RMS par segment vectorise (utilise pour le gate, pas pour le DTW)
-        j_segs = j[:nj * seg_len].reshape(nj, seg_len)
-        env_j = np.sqrt(np.mean(j_segs ** 2, axis=1))
-        env_j_peak = np.max(env_j) if nj > 0 else 1.0
-        gate_thresh = env_j_peak * 0.12  # 12% plus agressif
-        gate_seg = np.where(env_j > gate_thresh, 1.0, (env_j / gate_thresh) ** 2)  # courbe quadratique = fade plus rapide
-        gate_centers = (np.arange(nj) + 0.5) * seg_len
-        frame_centers = np.arange(n_frames, dtype=np.float64) * hop + n_fft // 2
-        gate_frames = np.clip(np.interp(frame_centers, gate_centers, gate_seg), 0.0, 1.0)
-        
-        # HF preserve — consonnes Jessica >4kHz
-        freq_bins = np.arange(n_bins) * sr / n_fft
-        hf_mask = np.ones(n_bins)
-        hf_zone = (freq_bins > 4000) & (freq_bins <= 8000)
-        hf_mask[hf_zone] = 1.0 - 0.7 * (freq_bins[hf_zone] - 4000) / 4000
-        hf_mask[freq_bins > 8000] = 0.3
-        
-        # Detecteur de transitoires : frames ou l'energie change vite = consonnes
-        # Sur ces frames, reduire fortement SIWIS pour garder la nettete Jessica
-        energy_per_frame = np.sum(mag_j ** 2, axis=0)
-        energy_diff = np.abs(np.diff(energy_per_frame, prepend=energy_per_frame[0]))
-        energy_median = np.median(energy_per_frame) + 1e-10
-        transient_score = energy_diff / energy_median
-        # transient_mask: 1.0 = voyelle stable, 0.3 = consonne/transitoire
-        transient_mask = np.where(transient_score > 0.5, 0.3, 1.0)
-        # Smooth pour pas de coupure brutale
-        if _smooth1d is not None:
-            transient_mask = _smooth1d(transient_mask, size=3)
-        
-        eff_ratio = ratio * gate_frames[None, :] * hf_mask[:, None] * transient_mask[None, :]
-        mag_blend = mag_j * (1.0 - eff_ratio) + mag_s * eff_ratio
-        
-        # Conservation d'energie frame-par-frame : le blend ne doit pas
-        # reduire le volume par rapport a Jessica
-        energy_j = np.sum(mag_j ** 2, axis=0)  # energie par frame
-        energy_b = np.sum(mag_blend ** 2, axis=0)
-        gain = np.where(energy_b > 0, np.sqrt(energy_j / energy_b), 1.0)
-        mag_blend *= gain[None, :]
-        
-        # iSTFT vectorisee overlap-add (np.add.at evite la boucle Python)
-        blend_frames = np.fft.irfft(mag_blend * np.exp(1j * phase_j), axis=0).T  # (n_frames, n_fft)
-        blend_frames *= win[None, :]
-        win_sq = win ** 2
-        out = np.zeros(n_out, dtype=np.float64)
-        win_sum = np.zeros(n_out, dtype=np.float64)
-        # Indices vectorises pour overlap-add sans boucle
-        frame_idx = np.arange(n_frames)[:, None]  # (n_frames, 1)
-        sample_idx = np.arange(n_fft)[None, :]    # (1, n_fft)
-        target_idx = (frame_idx * hop + sample_idx).ravel()  # indices absolus
-        np.add.at(out, target_idx, blend_frames.ravel())
-        np.add.at(win_sum, target_idx, np.tile(win_sq, n_frames))
-        stable_mask = win_sum > 0.1
-        out[stable_mask] /= win_sum[stable_mask]
-        out[~stable_mask] = j_trimmed[~stable_mask]
-    
-    # --- Normalisation (volume fort) ---
-    peak = np.max(np.abs(out))
-    if peak > 0:
-        out *= 31000.0 / peak
-    return out.astype(np.float32)
-
-# --- Re-accentuation FR (pre-TTS) ---
-# Piper prononce mal les mots sans accents (e muet au lieu de é/è/ê)
-# Dictionnaire: mot sans accent -> mot avec accent
-_ACCENT_MAP = {
-    "tete": "tête", "tetes": "têtes", "tres": "très", "ete": "été",
-    "pere": "père", "mere": "mère", "frere": "frère", "fete": "fête",
-    "bete": "bête", "pret": "prêt", "prete": "prête", "foret": "forêt",
-    "fenetre": "fenêtre", "interet": "intérêt", "arret": "arrêt",
-    "desole": "désolé", "desolee": "désolée", "idee": "idée",
-    "interessant": "intéressant", "interessante": "intéressante",
-    "interesse": "intéressé", "interessee": "intéressée",
-    "prefere": "préféré", "preferer": "préférer", "preferes": "préférés",
-    "repete": "répète", "repeter": "répéter", "cree": "créé",
-    "creee": "créée", "general": "général", "generale": "générale",
-    "probleme": "problème", "problemes": "problèmes",
-    "systeme": "système", "systemes": "systèmes",
-    "theme": "thème", "modele": "modèle", "modeles": "modèles",
-    "premiere": "première", "derniere": "dernière", "lumiere": "lumière",
-    "maniere": "manière", "matiere": "matière", "entiere": "entière",
-    "different": "différent", "differente": "différente",
-    "developpement": "développement", "developper": "développer",
-    "evenement": "événement", "element": "élément", "elements": "éléments",
-    "experience": "expérience", "necessaire": "nécessaire",
-    "reponse": "réponse", "repondre": "répondre",
-    "energie": "énergie", "securite": "sécurité", "realite": "réalité",
-    "verite": "vérité", "societe": "société", "qualite": "qualité",
-    "liberte": "liberté", "beaute": "beauté", "egalite": "égalité",
-    "deja": "déjà", "voila": "voilà", "la": "là", "ou": "où",
-    "a": "à",  # preposition
-    "evidemment": "évidemment", "generalement": "généralement",
-    "particulierement": "particulièrement", "completement": "complètement",
-    "immediatement": "immédiatement", "reellement": "réellement",
-    "eventuellement": "éventuellement", "sincerement": "sincèrement",
-    "etait": "était", "etaient": "étaient", "etes": "êtes",
-    "etat": "état", "etats": "états", "ecran": "écran",
-    "ecouter": "écouter", "ecoute": "écoute", "ecrit": "écrit",
-    "ecrire": "écrire", "electrique": "électrique",
-    "electronique": "électronique", "regle": "règle", "regles": "règles",
-    "reveil": "réveil", "reveler": "révéler", "eleve": "élève",
-    "celebre": "célèbre", "colere": "colère", "derriere": "derrière",
-    "legere": "légère", "leger": "léger", "severe": "sévère",
-    "numero": "numéro", "opera": "opéra", "cafe": "café",
-    "resume": "résumé", "passe": "passé", "cote": "côté",
-}
-
-_ACCENT_RE = re.compile(r"^([A-Za-zÀ-ÿ'-]+)(.*)")
-_AVOIR_SUBJECTS = frozenset(("il", "elle", "on", "qui", "david", "claudius", "ca", "cela", "tout", "ça"))
-
-def _reaccentuate(text):
-    """Remet les accents FR sur les mots courants avant envoi a Piper."""
-    words = text.split()
-    out = []
-    for idx, w in enumerate(words):
-        match = _ACCENT_RE.match(w)
-        if not match:
-            out.append(w)
-            continue
-        core, punct = match.group(1), match.group(2)
-        lower = core.lower()
-        # Cas special "a" -> "à" seulement si c'est la preposition
-        if lower == "a":
-            prev = words[idx-1].lower().rstrip(".,!?;:") if idx > 0 else ""
-            if prev in _AVOIR_SUBJECTS:
-                out.append(w)  # verbe avoir, pas de changement
-                continue
-        if lower in _ACCENT_MAP:
-            repl = _ACCENT_MAP[lower]
-            # Preserver la casse
-            if core[0].isupper():
-                repl = repl[0].upper() + repl[1:]
-            if core.isupper():
-                repl = repl.upper()
-            out.append(repl + punct)
-        else:
-            out.append(w)
-    return " ".join(out)
+            time.sleep(5)
+            sfx_play("boot")
 
 def _tts_wait(text):
-    text = _reaccentuate(text)  # accents FR avant Piper
+    text = reaccentuate(text)
     _speaking.set()
-    try: open(TTS_LOCK_FILE, "w").close()
-    except: pass
     try:
-        _piper_ready.wait(timeout=5)
+        open(TTS_LOCK_FILE, "w").close()
+    except Exception:
+        pass
+    try:
+        _piper_ready.wait(timeout=20)
         if _piper_voice is not None:
             audio_data = None
             sample_rate = _piper_voice.config.sample_rate
@@ -441,118 +174,397 @@ def _tts_wait(text):
                 try:
                     t = time.time()
                     if _piper_voice2 is not None:
-                        # Synth parallele : Jessica + SIWIS en meme temps
-                        j_box, s_box = [None], [None]
-                        def _sj(): j_box[0] = np.concatenate([c.audio_int16_array for c in _piper_voice.synthesize(text)])
-                        def _ss(): s_box[0] = np.concatenate([c.audio_int16_array for c in _piper_voice2.synthesize(text)])
-                        tj = threading.Thread(target=_sj); ts = threading.Thread(target=_ss)
-                        tj.start(); ts.start()
-                        tj.join(timeout=15); ts.join(timeout=15)
-                        if j_box[0] is not None and s_box[0] is not None:
-                            audio_data = _blend_voices(j_box[0], s_box[0], BLEND_RATIO)
-                        elif j_box[0] is not None:
-                            audio_data = j_box[0].astype(np.float32)
+                        audio_data = synth_both(_piper_voice, _piper_voice2, text)
                     else:
                         frames = [c.audio_int16_array for c in _piper_voice.synthesize(text)]
-                        if frames: audio_data = np.concatenate(frames).astype(np.float32)
+                        if frames:
+                            audio_data = np.concatenate(frames).astype(np.float32)
                     dt = time.time() - t
                     if audio_data is not None:
-                        _log(f"Piper {'blend' if _piper_voice2 else 'solo'}: {dt:.2f}s ({len(audio_data)/sample_rate:.1f}s audio)")
+                        log(f"TTS {'blend' if _piper_voice2 else 'solo'}: {dt:.2f}s", LOG_FILE, "TTS")
                 except Exception as e:
-                    _log("ERR tts synth: " + str(e))
+                    log(f"ERR tts synth: {e}", LOG_FILE, "TTS")
             if audio_data is not None:
                 try:
-                    # Audio toujours en range int16 (peak ~31000) -> normalise [-1, 1]
                     sd.play(audio_data / 32768.0, samplerate=sample_rate)
                     sd.wait()
                 except Exception as e:
-                    _log("ERR tts play: " + str(e))
+                    log(f"ERR tts play: {e}", LOG_FILE, "TTS")
         else:
-            subprocess.call([PYTHON, TTS_PY, text, "--local"],
+            subprocess.call([PYTHON, os.path.join(_KINECT_DIR, "KinectTTS.py"), text, "--local"],
                             creationflags=subprocess.CREATE_NO_WINDOW)
     finally:
+        time.sleep(1.0)  # laisser le son se dissiper avant de rouvrir le micro
         _speaking.clear()
-        time.sleep(0.3)
-        try: os.remove(TTS_LOCK_FILE)
-        except: pass
+        try:
+            os.remove(TTS_LOCK_FILE)
+        except Exception:
+            pass
 
-# --- LLM Claude Haiku via API ---
+# ====================================================================
+# ALARM TIMER → TTS + SFX
+# ====================================================================
+def _on_timer_alarm(message):
+    """Callback quand un timer sonne : SFX alarm + TTS."""
+    _priority_evt.set()
+    try:
+        sfx_play("alarm", blocking=True)
+        if message:
+            _tts_wait(f"David ! Rappel : {message}")
+        else:
+            _tts_wait("David ! Le timer est termine !")
+    finally:
+        _priority_evt.clear()
 
+# ====================================================================
+# MOTEUR KINECT
+# ====================================================================
+def _run(cmd):
+    with _motor_lock:
+        if _motor_daemon_mode:
+            try:
+                with open(MOTOR_CMD_FILE, "w") as f:
+                    f.write(cmd)
+                log(f"CMD> {cmd}", LOG_FILE, "MOTOR")
+            except Exception as e:
+                log(f"ERR cmd write: {e}", LOG_FILE, "MOTOR")
+        else:
+            try:
+                subprocess.call([MOTOR_EXE, cmd], creationflags=subprocess.CREATE_NO_WINDOW)
+                log(f"OK: {cmd}", LOG_FILE, "MOTOR")
+            except Exception as e:
+                log(f"ERR _run {cmd}: {e}", LOG_FILE, "MOTOR")
+
+def _run_snap():
+    log("snap: debut", LOG_FILE, "SNAP")
+    with _motor_lock:
+        if _motor_daemon_mode:
+            try:
+                with open(MOTOR_CMD_FILE, "w") as f:
+                    f.write("snap")
+                log("snap: commande envoyee au daemon", LOG_FILE, "SNAP")
+                time.sleep(5)
+                return "OK:snap_via_daemon"
+            except Exception as e:
+                log(f"ERR snap cmd: {e}", LOG_FILE, "SNAP")
+                return None
+        for attempt in range(3):
+            try:
+                result = subprocess.check_output(
+                    [MOTOR_EXE, "snap"], creationflags=subprocess.CREATE_NO_WINDOW,
+                    stderr=subprocess.DEVNULL, timeout=30
+                ).decode(errors="replace").strip()
+                log(f"snap: {result}", LOG_FILE, "SNAP")
+                if (result.startswith("ERROR:") or result == "") and attempt < 2:
+                    time.sleep(2)
+                    continue
+                return result if result else None
+            except subprocess.TimeoutExpired:
+                log("ERR snap: timeout", LOG_FILE, "SNAP")
+                return None
+            except Exception as e:
+                log(f"ERR snap: {e}", LOG_FILE, "SNAP")
+                return None
+    return None
+
+def _launch_motor_daemon():
+    global _motor_daemon_mode, _motor_daemon_proc
+    if not os.path.exists(MOTOR_EXE):
+        log("MOTOR: exe introuvable — mode legacy", LOG_FILE)
+        return False
+    os.system("taskkill /f /im KinectMotor.exe >nul 2>nul")
+    time.sleep(1)
+    try:
+        proc = subprocess.Popen(
+            [MOTOR_EXE, "presence", _KINECT_DIR],
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+            cwd=_KINECT_DIR
+        )
+        time.sleep(3)
+        if proc.poll() is None:
+            _motor_daemon_mode = True
+            _motor_daemon_proc = proc
+            log(f"MOTOR: daemon lance (PID {proc.pid})", LOG_FILE)
+            return True
+    except Exception as e:
+        log(f"ERR motor daemon: {e}", LOG_FILE)
+    return False
+
+# ====================================================================
+# VISON
+# ====================================================================
+_SNAP_MAX_AGE = 10
+_VISION_KEYWORDS = [
+    "regarde", "tu vois", "vois-tu", "c'est quoi", "qu'est-ce que tu vois",
+    "montre", "observe", "devant toi", "camera", "snap",
+]
+
+def _find_recent_snap():
+    pattern = os.path.join(_KINECT_DIR, "KinectSnap-*.png")
+    snaps = glob.glob(pattern)
+    if not snaps:
+        return None
+    snaps.sort(key=os.path.getmtime, reverse=True)
+    newest = snaps[0]
+    age = time.time() - os.path.getmtime(newest)
+    if age <= _SNAP_MAX_AGE:
+        log(f"VISION: snap frais ({os.path.basename(newest)}, {age:.1f}s)", LOG_FILE)
+        return newest
+    return None
+
+def _encode_image_b64(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+def _is_vision_request(text):
+    t = text.lower()
+    return any(kw in t for kw in _VISION_KEYWORDS)
+
+# ====================================================================
+# MÉMOIRE LONGUE
+# ====================================================================
+def _load_memories():
+    try:
+        if os.path.exists(MEMORY_FILE):
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                memories = json.load(f)
+            return memories[-MAX_MEMORIES:]
+    except Exception as e:
+        log(f"ERR load memories: {e}", LOG_FILE)
+    return []
+
+def _save_memory(summary, exchange_count):
+    try:
+        memories = _load_memories() if os.path.exists(MEMORY_FILE) else []
+        entry = {"date": time.strftime("%Y-%m-%d %H:%M"), "summary": summary, "exchanges": exchange_count}
+        memories.append(entry)
+        if len(memories) > 50:
+            memories = memories[-50:]
+        tmp = MEMORY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(memories, f, ensure_ascii=False, indent=2)
+        if os.path.exists(MEMORY_FILE):
+            os.remove(MEMORY_FILE)
+        os.rename(tmp, MEMORY_FILE)
+        log(f"MEMORY: souvenir sauve ({exchange_count} echanges)", LOG_FILE)
+    except Exception as e:
+        log(f"ERR save memory: {e}", LOG_FILE)
+
+def _summarize_session(history):
+    if len(history) < 2:
+        return None
+    try:
+        text_history = []
+        for msg in history:
+            role = "David" if msg["role"] == "user" else "Claudius"
+            content = msg["content"]
+            if isinstance(content, list):
+                content = " ".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
+            text_history.append(f"{role}: {content}")
+        convo = "\n".join(text_history)
+        payload = json.dumps({
+            "model": ANTHROPIC_MODEL, "max_tokens": 80,
+            "system": "Resume cette conversation en 1-2 phrases courtes en francais.",
+            "messages": [{"role": "user", "content": convo}]
+        }).encode("utf-8")
+        req = urllib.request.Request(ANTHROPIC_URL, data=payload, method="POST", headers={
+            "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01"
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            summary = json.loads(resp.read().decode())["content"][0]["text"].strip()
+        log(f"MEMORY: resume: {summary[:80]}", LOG_FILE)
+        return summary
+    except Exception as e:
+        log(f"ERR summarize: {e}", LOG_FILE)
+        return None
+
+def _format_memories_for_prompt():
+    memories = _load_memories()
+    if not memories:
+        return ""
+    lines = ["\nSOUVENIRS DES SESSIONS PRECEDENTES:"]
+    for m in memories:
+        lines.append(f"- [{m['date']}] {m['summary']}")
+    lines.append("Utilise ces souvenirs naturellement si pertinent.")
+    return "\n".join(lines)
+
+# ====================================================================
+# LLM
+# ====================================================================
 _SYSTEM_FALLBACK = (
     "Tu es Claudius, une tete animatronique Kinect Xbox 360 sur le bureau de David. "
     "Reponds en francais, 1-2 phrases max, naturellement. Pas de markdown."
 )
-
 _cached_system_prompt = None
 _cached_system_mtime = 0
 
 def _load_system_prompt():
-    """Charge le contexte depuis claudius_context.txt, cache par mtime."""
     global _cached_system_prompt, _cached_system_mtime
     for path in [CONTEXT_FILE, os.path.join(_KINECT_DIR, "claudius_context.txt")]:
         try:
             mt = os.path.getmtime(path)
-            if _cached_system_prompt and mt == _cached_system_mtime:
+            mem_mt = 0
+            try:
+                mem_mt = os.path.getmtime(MEMORY_FILE)
+            except Exception:
+                pass
+            cache_key = (mt, mem_mt)
+            if _cached_system_prompt and cache_key == _cached_system_mtime:
                 return _cached_system_prompt
             with open(path, "r", encoding="utf-8") as f:
                 ctx = f.read().strip()
             if ctx:
+                memories_text = _format_memories_for_prompt()
+                if memories_text:
+                    ctx += "\n" + memories_text
                 _cached_system_prompt = ctx
-                _cached_system_mtime = mt
+                _cached_system_mtime = cache_key
                 return ctx
         except Exception:
             continue
     return _SYSTEM_FALLBACK
 
-_conversation_history = []
-_history_lock = threading.Lock()
-MAX_HISTORY = 6  # nb d'echanges (user+assistant) gardes en memoire
-
-def _ask_claude(text):
-    global _conversation_history
-    with _history_lock:
-        _conversation_history.append({"role": "user", "content": text})
-        messages = list(_conversation_history)
+def _load_settings():
+    """Charge les settings dynamiques depuis claudius_settings.json."""
     try:
-        payload = json.dumps({
-            "model": ANTHROPIC_MODEL,
-            "max_tokens": 80,
-            "system": _load_system_prompt(),
-            "messages": messages
-        }).encode("utf-8")
-        req = urllib.request.Request(ANTHROPIC_URL, data=payload, method="POST", headers={
-            "Content-Type": "application/json",
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01"
-        })
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            reply = json.loads(resp.read().decode())["content"][0]["text"].strip()
+        with open(os.path.join(_DATA_DIR, "claudius_settings.json"), "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_PROVIDER_URLS = {
+    "deepseek": "https://api.deepseek.com/chat/completions",
+    "anthropic": "https://api.anthropic.com/v1/messages",
+    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+    "openai": "https://api.openai.com/v1/chat/completions",
+}
+
+def _resolve_provider(provider_name, key_setting=""):
+    """Résout URL + clé + format API pour un provider donné."""
+    p = provider_name.lower().strip()
+    is_anthropic = (p == "anthropic")
+    url = _PROVIDER_URLS.get(p, _PROVIDER_URLS["deepseek"])
+    # Clé : setting custom > fichier local
+    if key_setting:
+        key = key_setting
+    elif is_anthropic:
+        key = ANTHROPIC_API_KEY
+    else:
+        key = DEEPSEEK_API_KEY
+    return url, key, is_anthropic
+
+def _ask_claude(text, image_path=None):
+    global _conversation_history
+    settings = _load_settings()
+    max_tokens_llm = settings.get("max_tokens", 500)
+    llm_timeout = settings.get("llm_timeout", 25)
+    hist_size = settings.get("history_size", MAX_HISTORY)
+    v_provider = settings.get("voice_provider", "deepseek")
+    v_model = settings.get("voice_model", DEEPSEEK_MODEL)
+    s_provider = settings.get("snap_provider", "anthropic")
+    s_model = settings.get("snap_model", ANTHROPIC_MODEL)
+    temp = settings.get("temperature", 0.7)
+    use_vision = image_path is not None
+    if use_vision:
+        try:
+            img_b64 = _encode_image_b64(image_path)
+            user_content = [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}},
+                {"type": "text", "text": text}
+            ]
+            log(f"VISION: image attachee ({os.path.basename(image_path)})", LOG_FILE)
+        except Exception as e:
+            log(f"ERR vision encode: {e}", LOG_FILE)
+            user_content = text
+            use_vision = False
+    else:
+        user_content = text
+
+    with _history_lock:
+        _conversation_history.append({"role": "user", "content": user_content})
+        messages = list(_conversation_history)
+
+    system = _load_system_prompt()
+    if use_vision:
+        system += ("\n\n[VISION] Tu vois une image de ta camera Kinect. "
+                   "Ne decris PAS ce que tu vois sauf si demande explicite. "
+                   "Utilise l'image pour COMPRENDRE le contexte.")
+
+    try:
+        if use_vision:
+            cur_provider, cur_model = s_provider, s_model
+            cur_tokens, cur_timeout = 150, 20
+        else:
+            cur_provider, cur_model = v_provider, v_model
+            cur_tokens, cur_timeout = max_tokens_llm, llm_timeout
+
+        # Résolution automatique URL + clé par provider
+        v_key_setting = settings.get("voice_api_key", "")
+        s_key_setting = settings.get("snap_api_key", "")
+        key_setting = s_key_setting if use_vision else v_key_setting
+        cur_url, cur_key, is_anthropic = _resolve_provider(cur_provider, key_setting)
+
+        if is_anthropic:
+            payload = json.dumps({
+                "model": cur_model, "max_tokens": cur_tokens,
+                "system": system, "messages": messages
+            }).encode("utf-8")
+            req = urllib.request.Request(cur_url, data=payload, method="POST", headers={
+                "Content-Type": "application/json", "x-api-key": cur_key,
+                "anthropic-version": "2023-06-01"
+            })
+            with urllib.request.urlopen(req, timeout=cur_timeout) as resp:
+                reply = json.loads(resp.read().decode())["content"][0]["text"].strip()
+        else:
+            # Format OpenAI-compatible (DeepSeek, Ollama, OpenRouter, etc.)
+            oai_messages = [{"role": "system", "content": system}]
+            for m in messages:
+                c = m["content"]
+                if isinstance(c, list):
+                    c = " ".join(b.get("text", "") for b in c if b.get("type") == "text").strip()
+                    if not c:
+                        continue
+                oai_messages.append({"role": m["role"], "content": c})
+            payload = json.dumps({
+                "model": cur_model, "max_tokens": cur_tokens,
+                "messages": oai_messages, "temperature": temp
+            }).encode("utf-8")
+            req = urllib.request.Request(cur_url, data=payload, method="POST", headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {cur_key}"
+            })
+            with urllib.request.urlopen(req, timeout=cur_timeout) as resp:
+                reply = json.loads(resp.read().decode())["choices"][0]["message"]["content"].strip()
+                reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL).strip()
+
+        tag = "vision" if use_vision else "text"
+        log(f"LLM: {cur_provider}/{cur_model} ({tag})", LOG_FILE)
+
         with _history_lock:
             _conversation_history.append({"role": "assistant", "content": reply})
-            # Garder seulement les MAX_HISTORY derniers echanges (paires user/assistant)
-            if len(_conversation_history) > MAX_HISTORY * 2:
-                _conversation_history = _conversation_history[-(MAX_HISTORY * 2):]
+            if len(_conversation_history) > hist_size * 2:
+                _conversation_history = _conversation_history[-(hist_size * 2):]
         return reply
     except Exception as e:
-        _log("ERR claude: " + str(e))
+        log(f"ERR llm: {e}", LOG_FILE)
         with _history_lock:
-            # Retirer le message user si la requete a echoue
             if _conversation_history and _conversation_history[-1]["role"] == "user":
                 _conversation_history.pop()
         return None
 
-# --- Gestes ---
-
-# Mots-cles -> geste, scanne une seule fois
+# ====================================================================
+# GESTES
+# ====================================================================
 _GESTURE_WORDS = {}
-for _g, _ws in [
-    ("oui",   ["oui","absolument","exactement","bien sur","correct","effectivement"]),
-    ("non",   ["non","pas vraiment","pas du tout","jamais"]),
-    ("hello", ["bonjour","salut","hello","bonsoir"]),
-    ("think", ["hmm","interessant","voyons","je pense","curieux"]),
+for g, ws in [
+    ("oui", ["oui", "absolument", "exactement", "bien sur", "correct", "effectivement"]),
+    ("non", ["non", "pas vraiment", "pas du tout", "jamais"]),
+    ("hello", ["bonjour", "salut", "hello", "bonsoir"]),
+    ("think", ["hmm", "interessant", "voyons", "je pense", "curieux"]),
 ]:
-    for _w in _ws:
-        _GESTURE_WORDS[_w] = _g
+    for w in ws:
+        _GESTURE_WORDS[w] = g
 
 def _gesture_for(text):
     t = text.lower()
@@ -561,39 +573,78 @@ def _gesture_for(text):
             return gesture
     return None
 
-def _handle_voice(text):
-    _log("VOICE -> Claude: " + text[:60])
-    result_box = [None]
-    def _query():
-        try:
-            result_box[0] = _ask_claude(text)
-        except Exception as e:
-            _log("ERR _query: " + str(e))
-    t = threading.Thread(target=_query, daemon=True)
-    t.start()
-    # Think en parallele (non bloquant pour le thread principal)
-    threading.Thread(target=_run, args=("think",), daemon=True).start()
-    t.join(timeout=20)
-    reply = result_box[0] or "Desole, je suis hors ligne."
-    _log("VOICE reply: " + reply[:80])
-    # Transcript temps reel
+def _write_transcript(who, text):
     try:
         ts = time.strftime("%H:%M:%S")
-        with open(TRANSCRIPT_FILE, "a", encoding="utf-8") as _tf:
-            _tf.write(f"[{ts}] Claudius: {reply}\n")
+        with open(TRANSCRIPT_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {who}: {text}\n")
     except Exception:
         pass
+
+# ====================================================================
+# HANDLE VOICE
+# ====================================================================
+def _handle_voice(text):
+    log(f"VOICE -> {text[:60]}", LOG_FILE)
+    if not _speaking.is_set():
+        sfx_play("listen", blocking=True)
+
+    # 1. Commandes utilitaires (locales, zéro latence API)
+    util_reply = check_utility(text, on_alarm_callback=_on_timer_alarm)
+    if util_reply:
+        log(f"Util reply: {util_reply[:80]}", LOG_FILE)
+        _write_transcript("Claudius", util_reply)
+        gesture = _gesture_for(util_reply)
+        if gesture:
+            threading.Thread(target=_run, args=(gesture,), daemon=True).start()
+        _tts_wait(util_reply)
+        return
+
+    # 2. Vision ?
+    snap_path = None
+    if _is_vision_request(text):
+        log("VISION: trigger snap", LOG_FILE)
+        _run("snap")
+        for _ in range(8):
+            time.sleep(0.5)
+            snap_path = _find_recent_snap()
+            if snap_path:
+                break
+        if not snap_path:
+            log("VISION: pas de snap dispo", LOG_FILE)
+
+    # 3. Appel LLM
+    result_box = [None]
+
+    def _query():
+        try:
+            result_box[0] = _ask_claude(text, image_path=snap_path)
+        except Exception as e:
+            log(f"ERR _query: {e}", LOG_FILE)
+
+    t = threading.Thread(target=_query, daemon=True)
+    t.start()
+    threading.Thread(target=_run, args=("think",), daemon=True).start()
+    t.join(timeout=25 if snap_path else 20)
+    reply = result_box[0] or "Desole, je suis hors ligne."
+
+    log(f"VOICE reply: {reply[:80]}", LOG_FILE)
+    _write_transcript("Claudius", reply)
+
     gesture = _gesture_for(reply)
     if gesture:
         threading.Thread(target=_run, args=(gesture,), daemon=True).start()
     _tts_wait(reply)
 
-# --- Auto-blink ---
-
+# ====================================================================
+# AUTO-BLINK
+# ====================================================================
 def _auto_blink():
+    import random
     while True:
         if _sleeping.is_set():
-            time.sleep(1.0); continue
+            time.sleep(1.0)
+            continue
         interval = random.uniform(4.0, 8.0)
         if _priority_evt.wait(timeout=interval):
             while _priority_evt.is_set():
@@ -602,25 +653,32 @@ def _auto_blink():
         if not _speaking.is_set() and not _priority_evt.is_set() and not _sleeping.is_set():
             _run("blink")
 
-# --- Sleep / Wake ---
-
+# ====================================================================
+# SLEEP / WAKE
+# ====================================================================
 def _do_sleep():
     _sleeping.set()
-    try: open(SLEEP_FILE, "w").close()
-    except: pass
+    try:
+        open(SLEEP_FILE, "w").close()
+    except Exception:
+        pass
     _run("reset")
-    _log("Claudius en veille")
+    log("Veille", LOG_FILE)
 
 def _do_wake():
     _sleeping.clear()
-    try: os.remove(SLEEP_FILE)
-    except: pass
+    try:
+        os.remove(SLEEP_FILE)
+    except Exception:
+        pass
+    sfx_play("wake")
     _run("hello")
-    _log("Claudius reveille")
+    log("Reveil", LOG_FILE)
 
-# --- Watcher cmd.txt ---
-
-VALID_CMDS = {"oui","non","blink","hello","think","reset","snap","sleep","wake"}
+# ====================================================================
+# WATCHER cmd.txt
+# ====================================================================
+VALID_CMDS = {"oui", "non", "blink", "hello", "think", "reset", "snap", "sleep", "wake"}
 
 def watch_cmd():
     while True:
@@ -630,45 +688,271 @@ def watch_cmd():
                     with open(CMD_FILE, "r", encoding="utf-8") as f:
                         raw = f.read().strip()
                     os.remove(CMD_FILE)
-                except Exception as e:
-                    _log("watch ERR: " + str(e))
-                    try: os.remove(CMD_FILE)
-                    except: pass
-                    time.sleep(0.3); continue
+                except Exception:
+                    try:
+                        os.remove(CMD_FILE)
+                    except Exception:
+                        pass
+                    time.sleep(0.3)
+                    continue
+
                 if not raw:
-                    time.sleep(0.3); continue
+                    time.sleep(0.3)
+                    continue
+
                 cmd = raw.lower()
                 if cmd.startswith("voice:"):
                     if _sleeping.is_set():
-                        _log("VOICE ignore (veille)")
+                        log("VOICE ignore (veille)", LOG_FILE)
                     else:
                         text = raw[6:].strip()
                         if text:
-                            _log("VOICE recu: " + text)
                             _priority_evt.set()
-                            try: _handle_voice(text)
-                            finally: _priority_evt.clear()
+                            try:
+                                _handle_voice(text)
+                            finally:
+                                _priority_evt.clear()
                 elif cmd in VALID_CMDS:
                     _priority_evt.set()
                     try:
-                        if   cmd == "snap":  _run_snap()
-                        elif cmd == "sleep": _do_sleep()
-                        elif cmd == "wake":  _do_wake()
-                        else:                _run(cmd)
-                    finally: _priority_evt.clear()
-                else:
-                    _log("inconnu: " + repr(cmd))
+                        if cmd == "snap":
+                            _run_snap()
+                        elif cmd == "sleep":
+                            _do_sleep()
+                        elif cmd == "wake":
+                            _do_wake()
+                        else:
+                            _run(cmd)
+                    finally:
+                        _priority_evt.clear()
         except Exception as e:
-            _log("watch ERR: " + str(e))
+            log(f"watch ERR: {e}", LOG_FILE)
             _priority_evt.clear()
         time.sleep(0.3)
 
-# --- Entrypoint ---
+# ====================================================================
+# WATCHDOG VOICE
+# ====================================================================
+_WATCHDOG_INTERVAL = 30
+_HEARTBEAT_TIMEOUT = 90
+_MAX_RESTARTS = 5
+_RESTART_RESET = 600
 
-if __name__ == "__main__":
-    _enforce_singleton()
-    _cleanup_boot()
-    # CUDA DLLs pour Piper (onnxruntime GPU)
+def _is_pid_alive(pid):
+    try:
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if h:
+            ctypes.windll.kernel32.CloseHandle(h)
+            return True
+    except Exception:
+        pass
+    return False
+
+def _kill_pid(pid):
+    try:
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(1, False, pid)
+        if h:
+            ctypes.windll.kernel32.TerminateProcess(h, 0)
+            ctypes.windll.kernel32.CloseHandle(h)
+    except Exception:
+        pass
+
+def _launch_voice():
+    try:
+        subprocess.Popen(
+            [PYTHON.replace("python.exe", "pythonw.exe"), VOICE_SCRIPT],
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+            cwd=_KINECT_DIR
+        )
+        log("WATCHDOG: Voice relance", LOG_FILE)
+        return True
+    except Exception as e:
+        log(f"WATCHDOG ERR: {e}", LOG_FILE)
+        return False
+
+def _watchdog_voice():
+    restart_count = 0
+    last_restart = 0.0
+    last_ok_time = time.time()
+    time.sleep(15)
+    log("WATCHDOG: actif", LOG_FILE)
+
+    while True:
+        time.sleep(_WATCHDOG_INTERVAL)
+        now = time.time()
+
+        if now - last_ok_time > _RESTART_RESET and restart_count > 0:
+            restart_count = 0
+            log("WATCHDOG: reset compteur", LOG_FILE)
+
+        if restart_count >= _MAX_RESTARTS:
+            if now - last_ok_time < _RESTART_RESET:
+                continue
+            else:
+                restart_count = 0
+                log("WATCHDOG: reset timeout", LOG_FILE)
+
+        need_restart, reason = False, ""
+        voice_pid = None
+        try:
+            if os.path.exists(VOICE_PID_FILE):
+                voice_pid = int(open(VOICE_PID_FILE).read().strip())
+        except (ValueError, OSError):
+            pass
+
+        if voice_pid is None:
+            need_restart = True
+            reason = "PID absent"
+        elif not _is_pid_alive(voice_pid):
+            need_restart = True
+            reason = f"PID {voice_pid} mort"
+        else:
+            try:
+                if os.path.exists(VOICE_HEARTBEAT):
+                    hb_time = float(open(VOICE_HEARTBEAT).read().strip())
+                    if now - hb_time > _HEARTBEAT_TIMEOUT:
+                        need_restart = True
+                        reason = f"heartbeat stale ({(now-hb_time):.0f}s)"
+                        _kill_pid(voice_pid)
+            except (ValueError, OSError):
+                pass
+
+        if need_restart:
+            if now - last_restart < 60:
+                continue
+            log(f"WATCHDOG: Voice down — {reason}", LOG_FILE)
+            for f in [VOICE_PID_FILE, VOICE_HEARTBEAT, TTS_LOCK_FILE]:
+                try:
+                    if os.path.exists(f):
+                        os.remove(f)
+                except Exception:
+                    pass
+            if _launch_voice():
+                restart_count += 1
+                last_restart = now
+                time.sleep(10)
+        else:
+            last_ok_time = now
+
+# ====================================================================
+# PRESENCE WATCHER
+# ====================================================================
+_PRESENCE_GREETINGS = {
+    "morning": ["Bonjour David !", "Bonjour !"],
+    "afternoon": ["Bonjour David !", "Bon apres-midi !"],
+    "evening": ["Bonsoir David !", "Bonsoir !"],
+}
+_PRESENCE_RETURN = ["Re !", "Bon retour !", "Te revoila !"]
+_PRESENCE_COOLDOWN = 3600
+_PRESENCE_MIN_ABSENCE = 300
+_first_greeting_done = False
+
+def _presence_watcher():
+    global _first_greeting_done
+    last_greeting = 0.0
+    was_present = False
+    absence_start = 0.0
+    memory_saved = False
+    log("PRESENCE: watcher actif", LOG_FILE)
+    _piper_ready.wait(timeout=30)
+    time.sleep(2)
+
+    while True:
+        time.sleep(2)
+        if _sleeping.is_set() or _speaking.is_set():
+            continue
+        # Check presence_enabled dans settings
+        try:
+            with open(os.path.join(_DATA_DIR, "claudius_settings.json"), "r") as f:
+                if not json.load(f).get("presence_enabled", True):
+                    continue
+        except Exception:
+            pass
+
+        try:
+            if not os.path.exists(PRESENCE_FILE):
+                was_present = False
+                continue
+            with open(PRESENCE_FILE, "r") as f:
+                lines = f.read().strip().split("\n")
+            if len(lines) < 2:
+                continue
+            present = (lines[0].strip() == "PRESENT")
+        except Exception:
+            continue
+
+        now = time.time()
+
+        if not present and was_present:
+            absence_start = now
+            if not memory_saved:
+                with _history_lock:
+                    history_copy = list(_conversation_history)
+                if len(history_copy) >= 4:
+                    memory_saved = True
+
+                    def _do_save():
+                        summary = _summarize_session(history_copy)
+                        if summary:
+                            _save_memory(summary, len(history_copy) // 2)
+                    threading.Thread(target=_do_save, daemon=True).start()
+
+        if present and not was_present:
+            absence_dur = now - absence_start if absence_start else 9999
+            if (now - last_greeting >= _PRESENCE_COOLDOWN) and (absence_dur >= _PRESENCE_MIN_ABSENCE):
+                last_greeting = now
+                memory_saved = False
+
+                if not _first_greeting_done:
+                    hour = int(time.strftime("%H"))
+                    period = "morning" if hour < 12 else ("afternoon" if hour < 18 else "evening")
+                    greeting = __import__("random").choice(_PRESENCE_GREETINGS[period])
+                    _first_greeting_done = True
+                else:
+                    greeting = __import__("random").choice(_PRESENCE_RETURN)
+
+                _priority_evt.set()
+                try:
+                    # Skip salutation si on a deja parle recemment
+                    if _conversation_history:
+                        log("PRESENCE: skip greeting (conversation active)", LOG_FILE)
+                    else:
+                        sfx_play("presence", blocking=True)
+                        threading.Thread(target=_run, args=("hello",), daemon=True).start()
+                        _tts_wait(greeting)
+                        _write_transcript("Claudius", greeting)
+                finally:
+                    _priority_evt.clear()
+
+        was_present = present
+
+# ====================================================================
+# WATCHDOG MOTOR
+# ====================================================================
+def _watchdog_motor():
+    global _motor_daemon_mode, _motor_daemon_proc
+    time.sleep(10)
+    log("WATCHDOG MOTOR: actif", LOG_FILE)
+    restart_count = 0
+    while True:
+        time.sleep(15)
+        if not _motor_daemon_mode or _motor_daemon_proc is None:
+            continue
+        if _motor_daemon_proc.poll() is not None:
+            log(f"MOTOR: daemon mort (code {_motor_daemon_proc.returncode})", LOG_FILE)
+            if restart_count >= 10:
+                _motor_daemon_mode = False
+                continue
+            time.sleep(3)
+            if _launch_motor_daemon():
+                restart_count += 1
+
+# ====================================================================
+# CUDA SETUP
+# ====================================================================
+def _setup_cuda():
     import site
     for sp in site.getsitepackages():
         for sub in ["nvidia/cublas/bin", "nvidia/cudnn/bin", "nvidia/cufft/bin",
@@ -677,12 +961,36 @@ if __name__ == "__main__":
             p = os.path.join(sp, sub)
             if os.path.isdir(p):
                 os.environ["PATH"] = p + ";" + os.environ.get("PATH", "")
+
+# ====================================================================
+# ENTRYPOINT
+# ====================================================================
+if __name__ == "__main__":
+    _enforce_singleton()
+    _cleanup_boot()
+    _setup_cuda()
+
+    if not DEEPSEEK_API_KEY:
+        log("ERREUR: cle DeepSeek absente (deepseek_key.txt)", LOG_FILE)
     if not ANTHROPIC_API_KEY:
-        _log("ERREUR: cle API absente (C:\\Kinect\\api_key.txt)")
-    _log("=== KinectBridge demarrage (Claude Haiku) ===")
+        log("ATTENTION: cle Anthropic absente — vision desactivee", LOG_FILE)
+
+    log("=== KinectBridge v4 demarrage ===", LOG_FILE)
+
+    # Pré-calculer les SFX au boot
+    sfx_preload()
+
+    # Lancer les services
+    _launch_motor_daemon()
     threading.Thread(target=watch_cmd, daemon=True).start()
     threading.Thread(target=_auto_blink, daemon=True).start()
     threading.Thread(target=_load_piper_bg, daemon=True).start()
-    _log("KinectBridge pret.")
+    threading.Thread(target=_watchdog_voice, daemon=True).start()
+    threading.Thread(target=_watchdog_motor, daemon=True).start()
+    threading.Thread(target=_presence_watcher, daemon=True).start()
+
+    log("KinectBridge pret.", LOG_FILE)
+
+    # Boucle principale
     while True:
         time.sleep(60)
