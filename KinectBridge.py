@@ -433,6 +433,50 @@ def _load_settings():
     except Exception:
         return {}
 
+# ── Cerveau (Brain) — base de connaissances partagée (optionnelle) ──────────
+# Activez via claudius_settings.json : "brain_path": "<dossier de votre Brain>"
+# (vide ou absent = désactivé). Le Brain = un dossier de fiches .md avec
+# INDEX.md à la racine et projects/<nom>/STATE.md par projet.
+_BRAIN_ALIASES = {
+    "eldritch_front": ("eldritch",),
+    "odysseus": ("odysseus", "dashboard"),
+    "aether": ("aether",),
+    "gtt": ("gtt", "gamepad", "manette"),
+    "hardware_pads": ("capcom", "nes advantage", "pad bluetooth", "manette bluetooth"),
+}
+_BRAIN_GENERIC = ("cerveau", "brain", "mes projets", "les projets",
+                  "ou j'en suis", "où j'en suis", "quoi de neuf")
+
+def _brain_read_capped(path, cap=4000):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            t = f.read().strip()
+        return t[:cap] + ("\n[... tronqué ...]" if len(t) > cap else "")
+    except Exception:
+        return ""
+
+def _load_brain_context(user_text):
+    """Si la question touche un projet (ou le cerveau en général), injecte la
+    fiche pertinente du Brain dans le system prompt. Lecture seule, ciblée."""
+    brain = _load_settings().get("brain_path", "")
+    if not brain or not os.path.isdir(brain):
+        return ""
+    low = (user_text or "").lower()
+    parts = []
+    for proj, aliases in _BRAIN_ALIASES.items():
+        if any(a in low for a in aliases):
+            state = _brain_read_capped(os.path.join(brain, "projects", proj, "STATE.md"))
+            if state:
+                parts.append(f"[CERVEAU — état réel et à jour du projet {proj}]\n{state}")
+            break
+    if not parts and any(g in low for g in _BRAIN_GENERIC):
+        idx = _brain_read_capped(os.path.join(brain, "INDEX.md"), 3500)
+        if idx:
+            parts.append("[CERVEAU — index des projets et connaissances de David]\n" + idx)
+    if parts:
+        parts.append("(Appuie-toi sur ces infos à jour. Réponse vocale : concise.)")
+    return "\n\n".join(parts)
+
 _PROVIDER_URLS = {
     "deepseek": "https://api.deepseek.com/chat/completions",
     "anthropic": "https://api.anthropic.com/v1/messages",
@@ -486,6 +530,10 @@ def _ask_claude(text, image_path=None):
         messages = list(_conversation_history)
 
     system = _load_system_prompt()
+    brain_ctx = _load_brain_context(text)
+    if brain_ctx:
+        system += "\n\n" + brain_ctx
+        log("BRAIN: contexte cerveau injecte dans le prompt", LOG_FILE)
     if use_vision:
         system += ("\n\n[VISION] Tu vois une image de ta camera Kinect. "
                    "Ne decris PAS ce que tu vois sauf si demande explicite. "
