@@ -26,6 +26,29 @@ archives/
 
 # Cle API (jamais commiter)
 api_key.txt
+deepseek_key.txt
+
+# Modeles Piper (trop gros pour git)
+piper/
+
+# Memoire locale
+memory.json
+
+# Runtime
 *.lock
 *.pid
+voice_heartbeat.txt
 transcript.txt
+presence.txt
+claudius_stop.flag
+claudius_window.json
+
+# PyInstaller
+build/
+dist/
+*.spec
+ClaudiusDashboard.exe
+
+# Profils locaux
+claudius_profiles.json
+claudius_settings.json

@@ -1,0 +1,10 @@
+# Presence detection config
+# Distance min/max in mm (Kinect v1 range: 800-4000)
+min_mm=500
+max_mm=1500
+# Min depth pixels in zone to trigger presence
+pixel_threshold=800
+# Scan interval in ms
+scan_ms=500
+# Cooldown between presence triggers (seconds)
+cooldown_s=30
