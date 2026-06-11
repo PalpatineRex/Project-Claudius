@@ -234,23 +234,26 @@ def api_window_save():
 # FENETRE NATIVE pywebview — frameless, drag dans la topbar HTML
 # ====================================================================
 class _WinApi:
-    """API exposee au JS (window.pywebview.api.*) pour les boutons – ▢ ✕."""
+    """API exposee au JS (window.pywebview.api.*) pour les boutons – ▢ ✕.
+    ⚠️ La Window DOIT etre dans un attribut PRIVE (_window) : un attribut
+    public est serialise par le bridge JS de pywebview, qui part en recursion
+    infinie sur l'objet WinForms natif et CRASH le process (vecu 2026-06-11)."""
     def __init__(self):
-        self.window = None
+        self._window = None
         self._maximized = False
 
     def minimize(self):
-        if self.window: self.window.minimize()
+        if self._window: self._window.minimize()
 
     def toggle_maximize(self):
-        if not self.window: return
+        if not self._window: return
         if self._maximized:
-            self.window.restore(); self._maximized = False
+            self._window.restore(); self._maximized = False
         else:
-            self.window.maximize(); self._maximized = True
+            self._window.maximize(); self._maximized = True
 
     def close_window(self):
-        if self.window: self.window.destroy()
+        if self._window: self._window.destroy()
 
 
 def _load_geometry():
@@ -281,7 +284,7 @@ def _open_native_window():
     if x is not None and y is not None:
         kwargs.update(x=int(x), y=int(y))
     win = webview.create_window("Claudius Dashboard", "http://localhost:5005", **kwargs)
-    api.window = win
+    api._window = win
 
     def _on_closing():
         _save_geometry(win)

@@ -31,17 +31,42 @@ class KinectMotor {
         try { File.AppendAllText(LogFile, line + "\n"); } catch {}
     }
 
-    static void InitSensor(bool withColor, bool withDepth) {
-        foreach (var s in KinectSensor.KinectSensors)
-            if (s.Status == KinectStatus.Connected) { sensor = s; break; }
-        if (sensor == null) return;
+    static void InitSensor(bool withColor, bool withDepth) { InitSensor(withColor, withDepth, 2000); }
+
+    static void InitSensor(bool withColor, bool withDepth, int waitMs) {
+        // 'Initializing' est un etat TRANSITOIRE du SDK : l'ancien code ne
+        // regardait le statut qu'UNE fois -> si le Kinect n'avait pas fini de
+        // s'initialiser, echec instantane et mode legacy a vie (la panne des
+        // derniers jours). On attend desormais jusqu'a waitMs en loggant les
+        // transitions de statut (NotPowered / InsufficientBandwidth / etc.).
+        KinectStatus last = (KinectStatus)(-1);
+        for (int waited = 0; ; waited += 1000) {
+            int total = KinectSensor.KinectSensors.Count;
+            KinectStatus cur = (KinectStatus)(-1);
+            foreach (var s in KinectSensor.KinectSensors) {
+                cur = s.Status;
+                if (s.Status == KinectStatus.Connected) { sensor = s; break; }
+            }
+            if (cur != last) {
+                Log("sensor: " + (total == 0 ? "absent (0 enumere cote USB)" : cur.ToString()));
+                last = cur;
+            }
+            if (sensor != null || waited >= waitMs) break;
+            Thread.Sleep(1000);
+        }
+        if (sensor == null) {
+            Log("InitSensor: pas de sensor 'Connected' apres " + (waitMs / 1000) + "s");
+            return;
+        }
         try {
             if (withColor)
                 sensor.ColorStream.Enable(ColorImageFormat.RgbResolution640x480Fps30);
             if (withDepth)
                 sensor.DepthStream.Enable(DepthImageFormat.Resolution320x240Fps30);
             sensor.Start();
+            Log("sensor demarre" + (withColor ? " +color" : "") + (withDepth ? " +depth" : ""));
         } catch (Exception e) {
+            Log("ERR sensor.Start: " + e.Message);
             Console.Error.WriteLine("ERROR:sensor_start:" + e.Message);
             sensor = null;
         }
@@ -225,7 +250,7 @@ class KinectMotor {
         Log("=== Daemon mode ===");
         LoadPresenceConfig();
 
-        InitSensor(true, true);  // color + depth for snap + presence
+        InitSensor(true, true, 30000);  // color + depth for snap + presence (daemon: patient)
         if (sensor == null) {
             Log("ERROR: no Kinect sensor");
             return;
