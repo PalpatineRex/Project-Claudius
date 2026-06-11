@@ -144,10 +144,16 @@ def api_stats():
             if len(parts) > 1:
                 mic_threshold = int(float(parts[1]))
     except Exception: pass
+    brain_on = False
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            bp = json.load(f).get("brain_path", "")
+        brain_on = bool(bp) and os.path.isdir(bp)
+    except Exception: pass
     return jsonify({"uptime": uptime, "presence": presence, "memories": mem_count,
                     "exchanges": exchanges, "bridge_alive": bridge_alive,
                     "voice_alive": voice_alive, "voice_hb_age": voice_hb_age,
-                    "motor_status": motor_status,
+                    "motor_status": motor_status, "brain_on": brain_on,
                     "mic_level": mic_level, "mic_threshold": mic_threshold})
 
 @app.route("/api/miclevel")
@@ -213,19 +219,24 @@ def api_sysload():
         d[0] += cp; d[1] += rm
     cpu_machine = cpu_total / max(1, psutil.cpu_count() or 1)
     c["tick"] += 1
-    if c["tick"] % 3 == 1:
+    if c["tick"] % 3 == 1 and c["pids"]:
+        # nvidia-smi ne donne PAS la VRAM par process en mode WDDM ([N/A]) —
+        # la vraie source = les compteurs perf Windows (ceux du Gestionnaire
+        # des taches) : GPU Process Memory(pid_*)\Dedicated Usage.
         try:
-            out = subprocess.run(
-                ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory",
-                 "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=4,
-                creationflags=subprocess.CREATE_NO_WINDOW).stdout
-            v = 0
-            for line in out.strip().splitlines():
-                parts = line.split(",")
-                if len(parts) >= 2 and parts[0].strip().isdigit() and int(parts[0].strip()) in c["pids"]:
-                    v += int(float(parts[1].strip()))
-            c["vram"] = v
+            ids = "','".join(str(p) for p in c["pids"])
+            ps_cmd = (
+                "$ids=@('" + ids + "');"
+                "(Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage' -ErrorAction Stop).CounterSamples | "
+                "Where-Object { $_.InstanceName -match '^pid_(\\d+)' -and $ids -contains $Matches[1] } | "
+                "Measure-Object -Property CookedValue -Sum | Select-Object -ExpandProperty Sum")
+            # stdin=DEVNULL OBLIGATOIRE : sous pythonw, powershell herite d'un
+            # stdin invalide et meurt silencieusement (vram restait a -1)
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd],
+                                 capture_output=True, text=True, timeout=8,
+                                 stdin=subprocess.DEVNULL,
+                                 creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip()
+            c["vram"] = int(float(out)) // 1048576 if out else 0
         except Exception:
             c["vram"] = -1
     return jsonify({"ok": True, "cpu": round(cpu_machine, 1),

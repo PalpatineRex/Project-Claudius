@@ -104,6 +104,7 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
     <span class="pill" id="pill-bridge">BRIDGE</span>
     <span class="pill" id="pill-voice">VOICE</span>
     <span class="pill" id="pill-motor" title="">MOTOR</span>
+    <span class="pill" id="pill-brain" title="hook Cerveau (Brain) dans le prompt">BRAIN</span>
     <span class="pill" id="pill-presence">PRESENCE</span>
   </div>
   <div class="tstats">
@@ -111,7 +112,7 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
     <span id="sysload" title="impact systeme de Claudius">&#x26A1; --</span>
     <span data-i18n-skip>UPTIME <b id="st-uptime">--</b></span>
     <span><span data-i18n="exchanges">ECHANGES</span> <b id="st-exchanges">0</b></span>
-    <span><span data-i18n="memories">SOUVENIRS</span> <b id="st-memories">0</b></span>
+    <span title="souvenirs LOCAUX de Claudius (memory.json) — distincts du Brain central"><span data-i18n="memories">LOCAL</span> <b id="st-memories">0</b></span>
   </div>
   <div class="win-ctrls no-drag">
     <button class="win-btn" onclick="winMin()" title="Reduire">&#x2013;</button>
@@ -305,6 +306,7 @@ pill('pill-bridge',d.bridge_alive?'on':'off','BRIDGE');
 pill('pill-voice',d.voice_alive?'on':'off','VOICE'+(d.voice_hb_age>=0&&d.voice_hb_age<120?'':' ?'));
 const ms=d.motor_status||'unknown';
 pill('pill-motor',ms==='daemon'?'on':(ms==='legacy'?'warn':'off'),'MOTOR',T('motor_'+(ms==='daemon'?'daemon':ms==='legacy'?'legacy':ms==='error'?'error':'unknown')));
+pill('pill-brain',d.brain_on?'on':'off','BRAIN',d.brain_on?'hook Cerveau ACTIF (fiches projets injectees dans le prompt)':'hook Cerveau inactif (brain_path vide — OPTIONS > CERVEAU)');
 pill('pill-presence',d.presence==='PRESENT'?'on':'off',d.presence==='PRESENT'?T('here'):T('absent'));
 $('st-status').textContent='live';$('st-status').style.color='#7ce38b';}
 catch(e){$('st-status').textContent='offline';$('st-status').style.color='var(--red)';}}

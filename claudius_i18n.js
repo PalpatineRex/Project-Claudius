@@ -6,7 +6,7 @@ export const LANG_NAMES = { fr:'Français', en:'English', es:'Español', de:'Deu
 
 export const I18N = {
 fr:{conv_hdr:'CONVERSATION',logs_hdr:'BRIDGE LOGS',send_btn:'SEND',clear_btn:'CLEAR',
-exchanges:'ECHANGES',memories:'SOUVENIRS',
+exchanges:'ECHANGES',memories:'LOCAL',
 sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / IA',sec_brain:'▸ CERVEAU (BRAIN)',sec_profiles:'▸ PROFILS',sec_system:'▸ SYSTEME',sec_look:'▸ APPARENCE',
 mic_dev_lbl:'MICRO',mic_dev_tip:'Choisi PAR NOM (les index USB glissent quand on branche un peripherique). Restart Bridge pour appliquer.',
 vol_lbl:'VOLUME SFX',mic_lbl:'SEUIL MICRO (RMS)',
@@ -29,7 +29,7 @@ motor_daemon:'moteur daemon : gestes + presence OK',motor_legacy:'moteur en mode
 motor_error:'MOTEUR KO — Kinect absent ? (verifier alim 12V / port USB)',motor_unknown:'moteur : etat inconnu'},
 
 en:{conv_hdr:'CONVERSATION',logs_hdr:'BRIDGE LOGS',send_btn:'SEND',clear_btn:'CLEAR',
-exchanges:'EXCHANGES',memories:'MEMORIES',
+exchanges:'EXCHANGES',memories:'LOCAL',
 sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / AI',sec_brain:'▸ BRAIN',sec_profiles:'▸ PROFILES',sec_system:'▸ SYSTEM',sec_look:'▸ LOOK & FEEL',
 mic_dev_lbl:'MIC',mic_dev_tip:'Picked BY NAME (USB indexes shift when devices are plugged). Bridge restart required.',
 vol_lbl:'SFX VOLUME',mic_lbl:'MIC THRESHOLD (RMS)',
@@ -52,7 +52,7 @@ motor_daemon:'motor daemon: gestures + presence OK',motor_legacy:'motor degraded
 motor_error:'MOTOR DOWN — Kinect missing? (check 12V power / USB port)',motor_unknown:'motor: unknown state'},
 
 es:{conv_hdr:'CONVERSACION',logs_hdr:'LOGS DEL BRIDGE',send_btn:'ENVIAR',clear_btn:'LIMPIAR',
-exchanges:'INTERCAMBIOS',memories:'RECUERDOS',
+exchanges:'INTERCAMBIOS',memories:'LOCAL',
 sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / IA',sec_brain:'▸ CEREBRO (BRAIN)',sec_profiles:'▸ PERFILES',sec_system:'▸ SISTEMA',sec_look:'▸ APARIENCIA',
 mic_dev_lbl:'MICRO',mic_dev_tip:'Elegido POR NOMBRE (los indices USB cambian al conectar dispositivos). Reiniciar el Bridge para aplicar.',
 vol_lbl:'VOLUMEN SFX',mic_lbl:'UMBRAL MICRO (RMS)',
@@ -75,7 +75,7 @@ motor_daemon:'motor daemon: gestos + presencia OK',motor_legacy:'motor degradado
 motor_error:'MOTOR CAIDO — ¿Kinect ausente? (alimentacion 12V / puerto USB)',motor_unknown:'motor: estado desconocido'},
 
 de:{conv_hdr:'GESPRACH',logs_hdr:'BRIDGE-LOGS',send_btn:'SENDEN',clear_btn:'LEEREN',
-exchanges:'AUSTAUSCHE',memories:'ERINNERUNGEN',
+exchanges:'AUSTAUSCHE',memories:'LOCAL',
 sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / KI',sec_brain:'▸ GEHIRN (BRAIN)',sec_profiles:'▸ PROFILE',sec_system:'▸ SYSTEM',sec_look:'▸ AUSSEHEN',
 mic_dev_lbl:'MIKROFON',mic_dev_tip:'Nach NAME gewahlt (USB-Indizes verschieben sich beim Anschliessen). Bridge-Neustart erforderlich.',
 vol_lbl:'SFX-LAUTSTARKE',mic_lbl:'MIKRO-SCHWELLE (RMS)',
@@ -98,7 +98,7 @@ motor_daemon:'Motor-Daemon: Gesten + Prasenz OK',motor_legacy:'Motor im Notmodus
 motor_error:'MOTOR AUS — Kinect fehlt? (12V-Netzteil / USB-Port)',motor_unknown:'Motor: unbekannt'},
 
 it:{conv_hdr:'CONVERSAZIONE',logs_hdr:'LOG DEL BRIDGE',send_btn:'INVIA',clear_btn:'PULISCI',
-exchanges:'SCAMBI',memories:'RICORDI',
+exchanges:'SCAMBI',memories:'LOCAL',
 sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / IA',sec_brain:'▸ CERVELLO (BRAIN)',sec_profiles:'▸ PROFILI',sec_system:'▸ SISTEMA',sec_look:'▸ ASPETTO',
 mic_dev_lbl:'MICROFONO',mic_dev_tip:'Scelto PER NOME (gli indici USB cambiano collegando dispositivi). Riavvio del Bridge richiesto.',
 vol_lbl:'VOLUME SFX',mic_lbl:'SOGLIA MICRO (RMS)',
@@ -121,7 +121,7 @@ motor_daemon:'motore daemon: gesti + presenza OK',motor_legacy:'motore degradato
 motor_error:'MOTORE KO — Kinect assente? (alimentazione 12V / porta USB)',motor_unknown:'motore: stato sconosciuto'},
 
 pt:{conv_hdr:'CONVERSA',logs_hdr:'LOGS DO BRIDGE',send_btn:'ENVIAR',clear_btn:'LIMPAR',
-exchanges:'TROCAS',memories:'MEMORIAS',
+exchanges:'TROCAS',memories:'LOCAL',
 sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / IA',sec_brain:'▸ CEREBRO (BRAIN)',sec_profiles:'▸ PERFIS',sec_system:'▸ SISTEMA',sec_look:'▸ APARENCIA',
 mic_dev_lbl:'MICROFONE',mic_dev_tip:'Escolhido POR NOME (os indices USB mudam ao conectar dispositivos). Reiniciar o Bridge.',
 vol_lbl:'VOLUME SFX',mic_lbl:'LIMIAR MICRO (RMS)',
@@ -144,7 +144,7 @@ motor_daemon:'motor daemon: gestos + presenca OK',motor_legacy:'motor degradado 
 motor_error:'MOTOR EM BAIXO — Kinect ausente? (alimentacao 12V / porta USB)',motor_unknown:'motor: estado desconhecido'},
 
 ru:{conv_hdr:'РАЗГОВОР',logs_hdr:'ЛОГИ BRIDGE',send_btn:'ОТПРАВИТЬ',clear_btn:'ОЧИСТИТЬ',
-exchanges:'ОБМЕНЫ',memories:'ВОСПОМИНАНИЯ',
+exchanges:'ОБМЕНЫ',memories:'LOCAL',
 sec_audio:'▸ АУДИО',sec_llm:'▸ LLM / ИИ',sec_brain:'▸ МОЗГ (BRAIN)',sec_profiles:'▸ ПРОФИЛИ',sec_system:'▸ СИСТЕМА',sec_look:'▸ ВНЕШНИЙ ВИД',
 mic_dev_lbl:'МИКРОФОН',mic_dev_tip:'Выбирается ПО ИМЕНИ (индексы USB сдвигаются при подключении устройств). Требуется перезапуск Bridge.',
 vol_lbl:'ГРОМКОСТЬ SFX',mic_lbl:'ПОРОГ МИКРОФОНА (RMS)',
@@ -167,7 +167,7 @@ motor_daemon:'мотор-демон: жесты + присутствие OK',mot
 motor_error:'МОТОР НЕ РАБОТАЕТ — нет Kinect? (питание 12В / USB-порт)',motor_unknown:'мотор: неизвестно'},
 
 ja:{conv_hdr:'会話',logs_hdr:'ブリッジログ',send_btn:'送信',clear_btn:'クリア',
-exchanges:'やり取り',memories:'記憶',
+exchanges:'やり取り',memories:'LOCAL',
 sec_audio:'▸ オーディオ',sec_llm:'▸ LLM / AI',sec_brain:'▸ ブレイン',sec_profiles:'▸ プロファイル',sec_system:'▸ システム',sec_look:'▸ 外観',
 mic_dev_lbl:'マイク',mic_dev_tip:'名前で選択（USB機器を接続するとインデックスがずれる）。Bridgeの再起動が必要。',
 vol_lbl:'SFX音量',mic_lbl:'マイクしきい値 (RMS)',
@@ -190,7 +190,7 @@ motor_daemon:'モーターデーモン：ジェスチャー + 在席検知 OK',m
 motor_error:'モーター停止 — Kinect未接続？（12V電源 / USBポート）',motor_unknown:'モーター：不明'},
 
 zh:{conv_hdr:'对话',logs_hdr:'桥接日志',send_btn:'发送',clear_btn:'清除',
-exchanges:'交流',memories:'记忆',
+exchanges:'交流',memories:'LOCAL',
 sec_audio:'▸ 音频',sec_llm:'▸ LLM / AI',sec_brain:'▸ 大脑 (BRAIN)',sec_profiles:'▸ 配置档',sec_system:'▸ 系统',sec_look:'▸ 外观',
 mic_dev_lbl:'麦克风',mic_dev_tip:'按名称选择（插入USB设备时索引会变动）。需要重启Bridge。',
 vol_lbl:'音效音量',mic_lbl:'麦克风阈值 (RMS)',
@@ -213,7 +213,7 @@ motor_daemon:'电机守护：手势 + 在场检测正常',motor_legacy:'电机�
 motor_error:'电机故障 — Kinect缺失？（12V电源 / USB端口）',motor_unknown:'电机：未知',},
 
 ko:{conv_hdr:'대화',logs_hdr:'브리지 로그',send_btn:'전송',clear_btn:'지우기',
-exchanges:'대화 수',memories:'기억',
+exchanges:'대화 수',memories:'LOCAL',
 sec_audio:'▸ 오디오',sec_llm:'▸ LLM / AI',sec_brain:'▸ 브레인',sec_profiles:'▸ 프로필',sec_system:'▸ 시스템',sec_look:'▸ 외관',
 mic_dev_lbl:'마이크',mic_dev_tip:'이름으로 선택 (USB 기기 연결 시 인덱스가 바뀜). Bridge 재시작 필요.',
 vol_lbl:'효과음 볼륨',mic_lbl:'마이크 임계값 (RMS)',
