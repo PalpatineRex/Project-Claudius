@@ -224,17 +224,26 @@ def transcribe(frames, model):
         avg_lp = -999.0
     return text, avg_lp
 
-# --- Filtre mot-cle wake (configurable, defaut "Claudius") ---
-# Match fuzzy : cherche le mot-cle ou ses variantes n'importe ou dans la phrase
-if WAKE_WORD == "claudius":
-    _WAKE_EXACT = {"claudius", "clodius", "clodious", "klodius", "cloudius", "clodeus",
+# --- Filtre mot-cle wake (configurable, MULTI-TAGS via virgules) ---
+# Match fuzzy : cherche le(s) mot(s)-cle ou leurs variantes n'importe ou.
+# wake_word peut etre une LISTE : "claudius, claude, clodius" — chaque tag
+# ajoute son exact + son noyau phonetique (5 premieres lettres).
+_CLAUDIUS_EXACT = {"claudius", "clodius", "clodious", "klodius", "cloudius", "clodeus",
                    "cladius", "clodias", "clodis", "klaudius", "lodius", "laudice",
                    "clodice", "clodisse", "claude", "clodice", "laudis", "lodice"}
-    # Noyaux phonetiques — si un mot les contient, c'est probablement "Claudius"
-    _WAKE_CORES = ("claud", "clod", "klod", "klaud", "laudic", "lodic", "lodiu", "audiu", "audic", "audi")
-else:
-    _WAKE_EXACT = {WAKE_WORD}
-    _WAKE_CORES = (WAKE_WORD[:5],) if len(WAKE_WORD) >= 5 else (WAKE_WORD,)
+_CLAUDIUS_CORES = ("claud", "clod", "klod", "klaud", "laudic", "lodic", "lodiu", "audiu", "audic", "audi")
+
+_WAKE_EXACT = set()
+_WAKE_CORES = ()
+for _tag in [t.strip() for t in WAKE_WORD.split(",") if t.strip()]:
+    if _tag == "claudius":
+        _WAKE_EXACT |= _CLAUDIUS_EXACT
+        _WAKE_CORES += _CLAUDIUS_CORES
+    else:
+        _WAKE_EXACT.add(_tag)
+        _WAKE_CORES += ((_tag[:5],) if len(_tag) >= 5 else (_tag,))
+if not _WAKE_EXACT:
+    _WAKE_EXACT, _WAKE_CORES = set(_CLAUDIUS_EXACT), _CLAUDIUS_CORES
 
 def _contains_wake_word(text):
     """Cherche le mot-cle Claudius n'importe ou dans la phrase.

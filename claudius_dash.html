@@ -183,12 +183,18 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
 <div class="row"><label class="lbl" data-i18n="pcool_lbl">COOLDOWN SALUTATIONS</label><input type="range" id="set-pcool" min="60" max="3600" step="60" value="1800"><span class="val" id="set-pcool-val">30m</span></div>
 
 <h3 data-i18n="sec_look">&#x25B8; APPARENCE</h3>
-<div class="row"><label class="lbl" data-i18n="theme_lbl">THEME</label><select id="set-theme" onchange="applyTheme(this.value)"></select></div>
+<div class="row"><label class="lbl" data-i18n="theme_lbl">THEME</label><select id="set-theme" onchange="onThemePick(this.value)"></select></div>
+<div class="row" id="custom-colors" style="display:none"><label class="lbl" data-i18n="custom_lbl">COULEURS CUSTOM</label>
+<input type="color" id="cc-bg" title="fond" onchange="applyTheme('custom')">
+<input type="color" id="cc-fg" title="texte" onchange="applyTheme('custom')">
+<input type="color" id="cc-panel" title="panneaux" onchange="applyTheme('custom')">
+<input type="color" id="cc-border" title="bordures" onchange="applyTheme('custom')">
+<input type="color" id="cc-red" title="accent" onchange="applyTheme('custom')"></div>
 <div class="row"><label class="lbl" data-i18n="fx_lbl">EFFET DE FOND</label><select id="set-fx" onchange="applyFx()">
 <option value="auto">auto (theme)</option><option value="none">aucun</option><option value="dots">dots</option><option value="synapse">synapse</option><option value="rain">rain</option><option value="constellations">constellations</option><option value="perlin-flow">perlin-flow</option><option value="petals">petals</option><option value="sparkles">sparkles</option><option value="embers">embers</option></select></div>
 <div class="row"><label class="lbl" data-i18n="fxint_lbl">INTENSITE EFFET</label><input type="range" id="set-fxint" min="0" max="100" step="5" value="70" oninput="applyFx()"><span class="val" id="set-fxint-val">70%</span></div>
 <div class="row"><label class="lbl" data-i18n="fxspd_lbl">VITESSE EFFET</label><input type="range" id="set-fxspd" min="20" max="300" step="10" value="100" oninput="applyFx()"><span class="val" id="set-fxspd-val">1.0x</span></div>
-<div class="row"><label class="lbl">LANGUE / LANGUAGE</label><select id="set-lang" onchange="applyLang(this.value)"><option value="fr">Francais</option><option value="en">English</option></select></div>
+<div class="row"><label class="lbl">LANGUE / LANGUAGE</label><select id="set-lang" onchange="applyLang(this.value)"></select></div>
 
 <button class="btn btn-send" style="margin-top:16px;width:100%;padding:9px" onclick="saveSettings()" data-i18n="save_btn">SAUVEGARDER</button>
 <div class="tip" style="text-align:center;margin-top:8px" data-i18n="save_note">Micro, Whisper, Wake Word : restart du Bridge necessaire (bouton RESTART).</div>
@@ -196,6 +202,7 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
 
 <script type="module">
 import { applyBgPattern, applyBgEffectColor, applyBgEffectIntensity, applyBgEffectSpeed } from './dashboard-fx.js';
+import { I18N, LANG_NAMES } from './claudius_i18n.js';
 
 /* ===== Themes Odysseus (theme.js, lecture seule) ===== */
 const THEMES = {
@@ -226,38 +233,7 @@ let cLen=0,lHash='',_lang='fr',_curTheme='dark';
 const $=id=>document.getElementById(id);
 
 /* ===== i18n ===== */
-const _i18n={fr:{conv_hdr:'CONVERSATION',logs_hdr:'BRIDGE LOGS',send_btn:'SEND',clear_btn:'CLEAR',
-exchanges:'ECHANGES',memories:'SOUVENIRS',
-sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / IA',sec_brain:'▸ CERVEAU (BRAIN)',sec_profiles:'▸ PROFILS',sec_system:'▸ SYSTEME',sec_look:'▸ APPARENCE',
-mic_dev_lbl:'MICRO',mic_dev_tip:'Choisi PAR NOM (les index USB glissent quand on branche un peripherique). Restart Bridge pour appliquer.',
-vol_lbl:'VOLUME SFX',mic_lbl:'SEUIL MICRO (RMS)',mic_tip:'PLANCHER : le seuil EFFECTIF = max(ce reglage, ambiant x1.5 calibre au boot). Le tick rouge du vu-metre (topbar) = le seuil effectif reel.',tts_lbl:'VITESSE TTS',whisper_lbl:'MODELE WHISPER',wake_lbl:'MOT-CLE WAKE',
-vprov_sub:'Voix (reponses texte)',sprov_sub:'Vision (commande snap)',vkey_lbl:'CLE API VOIX',skey_lbl:'CLE API VISION',
-hist_lbl:'HISTORIQUE CONV',brain_lbl:'DOSSIER BRAIN',brain_tip:'Injection lecture seule des fiches projets dans le prompt (anti-invention). Vide pour desactiver.',
-pres_lbl:'PRESENCE DETECTION',pcool_lbl:'COOLDOWN SALUTATIONS',theme_lbl:'THEME',fx_lbl:'EFFET DE FOND',fxint_lbl:'INTENSITE EFFET',fxspd_lbl:'VITESSE EFFET',
-save_btn:'SAUVEGARDER',save_note:'Micro, Whisper, Wake Word : restart du Bridge necessaire (bouton RESTART).',
-prof_ph:'Nom du nouveau profil...',msg_ph:'Message ou commande...',
-m_voice:'\u{1F4AC} Parler',m_say:'\u{1F4E2} Faire dire',m_raw:'⚙ Commande',
-ph_voice:'Parle a Claudius (passe par le LLM, il repond)...',
-ph_say:'Il prononce ce texte TEL QUEL (sans LLM)...',
-ph_raw:'oui · non · hello · think · blink · snap · sleep · wake',
-restart_confirm:'Restart Bridge + Voice ?',restart_ok:'Bridge relance !',here:'ICI',absent:'ABSENT',
-motor_daemon:'moteur daemon : gestes + presence OK',motor_legacy:'moteur en mode degrade (one-shot)',motor_error:'MOTEUR KO — Kinect absent ? (verifier alim 12V)',motor_unknown:'moteur : etat inconnu'},
-en:{conv_hdr:'CONVERSATION',logs_hdr:'BRIDGE LOGS',send_btn:'SEND',clear_btn:'CLEAR',
-exchanges:'EXCHANGES',memories:'MEMORIES',
-sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / AI',sec_brain:'▸ BRAIN',sec_profiles:'▸ PROFILES',sec_system:'▸ SYSTEM',sec_look:'▸ LOOK & FEEL',
-mic_dev_lbl:'MIC',mic_dev_tip:'Picked BY NAME (USB indexes shift when devices are plugged). Bridge restart required.',
-vol_lbl:'SFX VOLUME',mic_lbl:'MIC THRESHOLD (RMS)',mic_tip:'FLOOR value: the EFFECTIVE threshold = max(this, ambient x1.5 calibrated at boot). The red tick on the topbar meter shows the real effective threshold.',tts_lbl:'TTS SPEED',whisper_lbl:'WHISPER MODEL',wake_lbl:'WAKE WORD',
-vprov_sub:'Voice (text responses)',sprov_sub:'Vision (snap command)',vkey_lbl:'VOICE API KEY',skey_lbl:'VISION API KEY',
-hist_lbl:'CONV HISTORY',brain_lbl:'BRAIN FOLDER',brain_tip:'Read-only injection of project files into the prompt (anti-hallucination). Empty to disable.',
-pres_lbl:'PRESENCE DETECTION',pcool_lbl:'GREETING COOLDOWN',theme_lbl:'THEME',fx_lbl:'BACKGROUND FX',fxint_lbl:'FX INTENSITY',fxspd_lbl:'FX SPEED',
-save_btn:'SAVE',save_note:'Mic, Whisper, Wake Word: Bridge restart required (RESTART button).',
-prof_ph:'New profile name...',msg_ph:'Message or command...',
-m_voice:'\u{1F4AC} Talk',m_say:'\u{1F4E2} Make him say',m_raw:'⚙ Command',
-ph_voice:'Talk to Claudius (goes through the LLM, he replies)...',
-ph_say:'He speaks this text AS-IS (no LLM)...',
-ph_raw:'oui · non · hello · think · blink · snap · sleep · wake',
-restart_confirm:'Restart Bridge + Voice?',restart_ok:'Bridge restarted!',here:'HERE',absent:'AWAY',
-motor_daemon:'motor daemon: gestures + presence OK',motor_legacy:'motor degraded (one-shot mode)',motor_error:'MOTOR DOWN — Kinect missing? (check 12V power)',motor_unknown:'motor: unknown state'}};
+const _i18n = I18N;
 function T(k){return (_i18n[_lang]||_i18n.fr)[k]||k;}
 window.applyLang=function(l){_lang=l;
 document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=T(el.getAttribute('data-i18n'));});
@@ -268,7 +244,7 @@ $('cmd-input').placeholder=T(v==='VOICE:'?'ph_voice':v==='SAY:'?'ph_say':'ph_raw
 $('cmd-prefix').addEventListener('change',updatePh);
 
 /* ===== Theme + FX ===== */
-window.applyTheme=function(t){const c=THEMES[t]||THEMES.dark;_curTheme=t;
+window.applyTheme=function(t){const c=t==='custom'?ccVals():(THEMES[t]||THEMES.dark);_curTheme=t;
 const r=document.documentElement.style;
 r.setProperty('--bg',c.bg);r.setProperty('--fg',c.fg);r.setProperty('--panel',c.panel);
 r.setProperty('--border',c.border);r.setProperty('--red',c.red);
@@ -350,7 +326,14 @@ const SLIDERS=[['set-vol','set-vol-val',v=>v+'%'],['set-mic','set-mic-val',v=>v]
 ['set-tokens','set-tokens-val',v=>v],['set-timeout','set-timeout-val',v=>v+'s'],['set-temp','set-temp-val',v=>(v/100).toFixed(1)],
 ['set-hist','set-hist-val',v=>v],['set-pcool','set-pcool-val',v=>Math.round(v/60)+'m']];
 SLIDERS.forEach(([id,vid,f])=>{$(id).addEventListener('input',function(){$(vid).textContent=f(this.value);});});
-function fillThemeSelect(){const sel=$('set-theme');sel.innerHTML='';Object.keys(THEMES).forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;sel.appendChild(o);});}
+function fillThemeSelect(){const sel=$('set-theme');sel.innerHTML='';Object.keys(THEMES).forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;sel.appendChild(o);});
+const oc=document.createElement('option');oc.value='custom';oc.textContent='★ custom';sel.appendChild(oc);}
+function fillLangSelect(){const sel=$('set-lang');sel.innerHTML='';Object.entries(LANG_NAMES).forEach(([code,name])=>{const o=document.createElement('option');o.value=code;o.textContent=name;sel.appendChild(o);});}
+function ccVals(){return{bg:$('cc-bg').value,fg:$('cc-fg').value,panel:$('cc-panel').value,border:$('cc-border').value,red:$('cc-red').value};}
+function ccFill(c){$('cc-bg').value=c.bg||'#282c34';$('cc-fg').value=c.fg||'#9cdef2';$('cc-panel').value=c.panel||'#111111';$('cc-border').value=c.border||'#355a66';$('cc-red').value=c.red||'#e06c75';}
+window.onThemePick=function(t){$('custom-colors').style.display=t==='custom'?'flex':'none';
+if(t==='custom'&&!$('cc-bg').dataset.init){ccFill(THEMES[_curTheme]||THEMES.dark);$('cc-bg').dataset.init='1';}
+applyTheme(t);}
 async function fillMicSelect(current){try{const r=await fetch('/api/devices');const d=await r.json();
 const sel=$('set-micname');sel.innerHTML='';
 d.inputs.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
@@ -372,7 +355,9 @@ $('set-temp').value=Math.round((s.temperature??0.7)*100);$('set-hist').value=s.h
 $('set-brain').value=s.brain_path||'';
 $('set-presence').checked=s.presence_enabled!==false;
 $('set-pcool').value=s.presence_cooldown||1800;
-$('set-theme').value=THEMES[s.theme]?s.theme:'dark';
+if(s.theme_custom&&s.theme_custom.bg){ccFill(s.theme_custom);$('cc-bg').dataset.init='1';}
+$('set-theme').value=(THEMES[s.theme]||s.theme==='custom')?s.theme:'dark';
+$('custom-colors').style.display=$('set-theme').value==='custom'?'flex':'none';
 $('set-fx').value=s.bg_effect||'auto';$('set-fxint').value=Math.round((s.bg_intensity??0.7)*100);$('set-fxspd').value=Math.round((s.bg_speed??1.0)*100);
 $('set-lang').value=s.lang||'fr';
 SLIDERS.forEach(([id,vid,f])=>{$(vid).textContent=f($(id).value);});
@@ -386,7 +371,7 @@ snap_provider:$('set-sprov').value.trim(),snap_model:$('set-smodel').value.trim(
 max_tokens:parseInt($('set-tokens').value),llm_timeout:parseInt($('set-timeout').value),temperature:$('set-temp').value/100,
 history_size:parseInt($('set-hist').value),brain_path:$('set-brain').value.trim(),
 presence_enabled:$('set-presence').checked,presence_cooldown:parseInt($('set-pcool').value),
-theme:$('set-theme').value,bg_effect:$('set-fx').value,bg_intensity:parseInt($('set-fxint').value)/100,bg_speed:parseInt($('set-fxspd').value)/100,
+theme:$('set-theme').value,theme_custom:ccVals(),bg_effect:$('set-fx').value,bg_intensity:parseInt($('set-fxint').value)/100,bg_speed:parseInt($('set-fxspd').value)/100,
 lang:$('set-lang').value};}
 window.saveSettings=async function(){try{
 await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
@@ -409,7 +394,7 @@ window.createProfile=async function(){const name=$('new-profile-name').value.tri
 await fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,settings:collect()})});
 $('new-profile-name').value='';await loadProfiles();$('set-profile').value=name;};
 
-fillThemeSelect();loadSettings();loadProfiles();
+fillThemeSelect();fillLangSelect();loadSettings();loadProfiles();
 setInterval(pollConv,800);setInterval(pollLogs,1000);setInterval(pollStats,2000);setInterval(pollMic,400);
 pollConv();pollLogs();pollStats();pollMic();
 </script></body></html>

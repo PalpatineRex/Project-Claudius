@@ -37,6 +37,7 @@ _DEFAULT_SETTINGS = {
     "whisper_model": "small", "wake_word": "claudius",
     "mic_name": "BIRD UM1", "brain_path": "", "audio_ignore": [],
     "bg_effect": "auto", "bg_intensity": 0.7, "bg_speed": 1.0, "lang": "fr",
+    "theme_custom": {},
 }
 _boot_time = time.time()
 _auto_restart_enabled = True
@@ -68,6 +69,15 @@ def _auto_restart_thread():
             print("[DASHBOARD] Bridge mort - relance...", flush=True); time.sleep(2); _launch_bridge()
 
 
+@app.after_request
+def _no_cache(resp):
+    # WebView2 CACHE agressivement la page -> les fenetres affichaient un
+    # VIEUX HTML/JS malgre les relances (jauge inerte, vecu 2026-06-11).
+    # Pattern Odysseus : no-store partout + ?v=ticks cote fenetre.
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
 @app.route("/")
 def index():
     try:
@@ -79,6 +89,10 @@ def index():
 @app.route("/dashboard-fx.js")
 def fx_js():
     return send_file(FX_FILE, mimetype="application/javascript")
+
+@app.route("/claudius_i18n.js")
+def i18n_js():
+    return send_file(os.path.join(_SCRIPT_DIR, "claudius_i18n.js"), mimetype="application/javascript")
 
 @app.route("/api/transcript")
 def api_transcript():
@@ -330,7 +344,10 @@ def _open_native_window():
                   background_color="#111111", js_api=api)
     if x is not None and y is not None:
         kwargs.update(x=int(x), y=int(y))
-    win = webview.create_window("Claudius Dashboard", "http://localhost:5005", **kwargs)
+    # ?v=<ts> : URL unique a chaque lancement -> le cache WebView2 ne peut
+    # jamais resservir une vieille page (le serveur envoie aussi no-store)
+    win = webview.create_window("Claudius Dashboard",
+                                f"http://localhost:5005/?v={int(time.time())}", **kwargs)
     api._window = win
 
     def _on_shown():
