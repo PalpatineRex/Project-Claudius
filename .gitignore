@@ -59,3 +59,4 @@ claudius.ico
 dist_new/
 *.spec
 ClaudiusDashboard.old.exe
+voice_level.txt

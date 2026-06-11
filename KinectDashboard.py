@@ -120,10 +120,21 @@ def api_stats():
         if bridge_alive:
             motor_status = open(MOTOR_STATUS_FILE).read().strip() or "unknown"
     except Exception: pass
+    # Vu-metre micro : "rms;seuil_effectif" ecrit par KinectVoice (~0.4 s), -1 si stale
+    mic_level, mic_threshold = -1, -1
+    try:
+        lf = os.path.join(_DATA_DIR, "voice_level.txt")
+        if time.time() - os.path.getmtime(lf) < 3:
+            parts = open(lf).read().strip().split(";")
+            mic_level = int(float(parts[0]))
+            if len(parts) > 1:
+                mic_threshold = int(float(parts[1]))
+    except Exception: pass
     return jsonify({"uptime": uptime, "presence": presence, "memories": mem_count,
                     "exchanges": exchanges, "bridge_alive": bridge_alive,
                     "voice_alive": voice_alive, "voice_hb_age": voice_hb_age,
-                    "motor_status": motor_status})
+                    "motor_status": motor_status,
+                    "mic_level": mic_level, "mic_threshold": mic_threshold})
 
 @app.route("/api/devices")
 def api_devices():
@@ -275,6 +286,28 @@ def _save_geometry(window):
     except Exception: pass
 
 
+def _enable_native_resize(window):
+    """Frameless + WS_THICKFRAME = poignees de resize natives sur les bords
+    (hack borderless classique : Windows gere le resize/snap, zero JS)."""
+    try:
+        import ctypes
+        h = window.native.Handle
+        hwnd = int(h.ToInt64()) if hasattr(h, "ToInt64") else int(h)
+        GWL_STYLE = -16
+        WS_THICKFRAME = 0x00040000
+        WS_MAXIMIZEBOX = 0x00010000
+        WS_MINIMIZEBOX = 0x00020000
+        u = ctypes.windll.user32
+        get_l = getattr(u, "GetWindowLongPtrW", u.GetWindowLongW)
+        set_l = getattr(u, "SetWindowLongPtrW", u.SetWindowLongW)
+        style = get_l(hwnd, GWL_STYLE) | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX
+        set_l(hwnd, GWL_STYLE, style)
+        # SWP_FRAMECHANGED : appliquer le nouveau cadre sans bouger la fenetre
+        u.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004)
+    except Exception:
+        pass  # pas de resize natif, la fenetre reste utilisable
+
+
 def _open_native_window():
     import webview
     api = _WinApi()
@@ -286,8 +319,12 @@ def _open_native_window():
     win = webview.create_window("Claudius Dashboard", "http://localhost:5005", **kwargs)
     api._window = win
 
+    def _on_shown():
+        _enable_native_resize(win)
+
     def _on_closing():
         _save_geometry(win)
+    win.events.shown += _on_shown
     win.events.closing += _on_closing
     webview.start()
 

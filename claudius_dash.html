@@ -28,8 +28,12 @@ background:color-mix(in srgb,var(--panel) 80%,transparent);border-bottom:1px sol
 .pill.on{color:#7ce38b;border-color:color-mix(in srgb,#7ce38b 50%,transparent);}
 .pill.warn{color:#ffb300;border-color:color-mix(in srgb,#ffb300 50%,transparent);}
 .pill.off{color:var(--red);border-color:color-mix(in srgb,var(--red) 55%,transparent);}
-.tstats{margin-left:auto;display:flex;gap:14px;font-size:10px;color:var(--dim);white-space:nowrap;}
+.tstats{margin-left:auto;display:flex;gap:14px;font-size:10px;color:var(--dim);white-space:nowrap;align-items:center;}
 .tstats b{color:var(--fg);font-weight:600;}
+.micbar{display:inline-block;width:90px;height:10px;border:1px solid var(--border);border-radius:5px;position:relative;overflow:hidden;background:color-mix(in srgb,var(--bg) 60%,transparent);}
+.micfill{display:block;height:100%;width:0%;background:var(--dim);transition:width .25s;}
+.micfill.hot{background:#7ce38b;}
+.mictick{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--red);left:60%;}
 .win-ctrls{position:absolute;top:6px;right:10px;display:flex;gap:2px;}
 .win-btn{width:30px;height:26px;display:flex;align-items:center;justify-content:center;background:none;border:none;border-radius:6px;color:var(--fg);opacity:.6;cursor:pointer;font-size:13px;line-height:1;}
 .win-btn:hover{opacity:1;background:color-mix(in srgb,var(--fg) 14%,transparent);}
@@ -103,6 +107,7 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
     <span class="pill" id="pill-presence">PRESENCE</span>
   </div>
   <div class="tstats">
+    <span class="micbar" id="micbar" title="niveau micro / seuil effectif">&#8203;<span class="micfill" id="micfill"></span><span class="mictick" id="mictick"></span></span>
     <span data-i18n-skip>UPTIME <b id="st-uptime">--</b></span>
     <span><span data-i18n="exchanges">ECHANGES</span> <b id="st-exchanges">0</b></span>
     <span><span data-i18n="memories">SOUVENIRS</span> <b id="st-memories">0</b></span>
@@ -121,7 +126,7 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
     <div class="pnl-body" id="logs"></div></div>
 </div>
 <div class="ctrl">
-  <select id="cmd-prefix"><option value="VOICE:">VOICE:</option><option value="">RAW</option></select>
+  <select id="cmd-prefix"><option value="VOICE:">VOICE:</option><option value="SAY:">SAY:</option><option value="">RAW</option></select>
   <input id="cmd-input" type="text" placeholder="Message ou commande...">
   <button class="btn btn-send" onclick="sendCmd()" data-i18n="send_btn">SEND</button>
   <button class="btn btn-icon" onclick="quickCmd('hello')" title="hello">&#x1F44B;</button>
@@ -275,6 +280,7 @@ window.winMax=()=>{if(inWebview())window.pywebview.api.toggle_maximize();};
 window.winClose=()=>{if(inWebview())window.pywebview.api.close_window();};
 window.addEventListener('pywebviewready',()=>document.body.classList.remove('in-browser'));
 setTimeout(()=>{if(!inWebview())document.body.classList.add('in-browser');},800);
+document.querySelector('.topbar').addEventListener('dblclick',e=>{if(!e.target.closest('.no-drag'))winMax();});
 
 /* ===== Polling ===== */
 function fmtUp(s){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return(h?h+'h ':'')+m+'m';}
@@ -304,12 +310,17 @@ pill('pill-voice',d.voice_alive?'on':'off','VOICE'+(d.voice_hb_age>=0&&d.voice_h
 const ms=d.motor_status||'unknown';
 pill('pill-motor',ms==='daemon'?'on':(ms==='legacy'?'warn':'off'),'MOTOR',T('motor_'+(ms==='daemon'?'daemon':ms==='legacy'?'legacy':ms==='error'?'error':'unknown')));
 pill('pill-presence',d.presence==='PRESENT'?'on':'off',d.presence==='PRESENT'?T('here'):T('absent'));
+if(d.mic_level>=0&&d.mic_threshold>0){const span=d.mic_threshold*2;const pct=Math.min(100,d.mic_level/span*100);
+$('micfill').style.width=pct+'%';$('micfill').className='micfill'+(d.mic_level>=d.mic_threshold?' hot':'');
+$('mictick').style.left=Math.min(98,d.mic_threshold/span*100)+'%';
+$('micbar').title='micro RMS '+d.mic_level+' / seuil effectif '+d.mic_threshold;}
+else{$('micfill').style.width='0%';$('micbar').title='micro : pas de signal (Voice off ?)';}
 $('st-status').textContent='live';$('st-status').style.color='#7ce38b';}
 catch(e){$('st-status').textContent='offline';$('st-status').style.color='var(--red)';}}
 
 /* ===== Commandes ===== */
 window.sendCmd=async function(){const pfx=$('cmd-prefix').value;const inp=$('cmd-input');let cmd=inp.value.trim();
-if(!cmd&&pfx==='VOICE:')return;cmd=pfx==='VOICE:'?'VOICE:'+cmd:(cmd||'');if(!cmd)return;
+if(!cmd&&pfx)return;cmd=pfx?pfx+cmd:(cmd||'');if(!cmd)return;
 try{await fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd})});inp.value='';}catch(e){}};
 window.quickCmd=async function(c){try{await fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:c})});}catch(e){}};
 window.restartBridge=async function(){if(!confirm(T('restart_confirm')))return;

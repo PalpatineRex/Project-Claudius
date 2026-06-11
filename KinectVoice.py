@@ -360,6 +360,8 @@ def calibrate(stream, duration=2.0):
     _log(f"Ambiant: {ambient:.0f} -> seuil: {threshold:.0f}")
     return threshold
 
+LEVEL_FILE = os.path.join(BASE_DIR, "voice_level.txt")
+
 def listen_loop(model, threshold, stream):
     _log(f"Ecoute active — seuil RMS={threshold:.0f}")
     recording = False
@@ -370,10 +372,22 @@ def listen_loop(model, threshold, stream):
     # Anti-flood : cooldown apres envoi d'une utterance
     last_send_time = 0.0
     COOLDOWN = 2.0  # secondes minimum entre deux envois
+    last_level_write = 0.0
 
     while True:
         chunk, _ = stream.read(CHUNK_SAMPLES)
         level    = rms(chunk)
+
+        # Vu-metre du dashboard : "rms;seuil_EFFECTIF" (le seuil calibre peut
+        # depasser le reglage mic_threshold — montrer la verite, ~2x/s)
+        _now = time.time()
+        if _now - last_level_write > 0.4:
+            last_level_write = _now
+            try:
+                with open(LEVEL_FILE, "w") as lf:
+                    lf.write(f"{level:.0f};{threshold:.0f}")
+            except Exception:
+                pass
 
         # TTS actif ou audio systeme (video, musique) : reset silencieux
         if os.path.exists(TTS_LOCK_FILE) or _system_audio_active:

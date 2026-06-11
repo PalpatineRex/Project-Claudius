@@ -818,6 +818,16 @@ def watch_cmd():
                                 _handle_voice(text)
                             finally:
                                 _priority_evt.clear()
+                elif cmd.startswith("say:"):
+                    # Debug TTS : faire parler Claudius sans LLM (voix/volume/vitesse)
+                    text = raw[4:].strip()
+                    if text:
+                        _priority_evt.set()
+                        try:
+                            _write_transcript("Claudius", text)
+                            _tts_wait(text)
+                        finally:
+                            _priority_evt.clear()
                 elif cmd in VALID_CMDS:
                     _priority_evt.set()
                     try:
