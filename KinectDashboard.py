@@ -336,9 +336,16 @@ def _open_native_window():
     def _on_shown():
         _enable_native_resize(win)
 
+    def _on_geom(*_a):
+        # Sauver a CHAQUE resize/move : la geometrie survit meme a un kill
+        # (avant : seulement a la fermeture propre — feature aimee de David)
+        _save_geometry(win)
+
     def _on_closing():
         _save_geometry(win)
     win.events.shown += _on_shown
+    win.events.resized += _on_geom
+    win.events.moved += _on_geom
     win.events.closing += _on_closing
     webview.start()
 

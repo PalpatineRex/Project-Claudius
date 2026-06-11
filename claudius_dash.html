@@ -126,7 +126,7 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
     <div class="pnl-body" id="logs"></div></div>
 </div>
 <div class="ctrl">
-  <select id="cmd-prefix"><option value="VOICE:">VOICE:</option><option value="SAY:">SAY:</option><option value="">RAW</option></select>
+  <select id="cmd-prefix"><option value="VOICE:" data-i18n="m_voice">&#x1F4AC; Parler</option><option value="SAY:" data-i18n="m_say">&#x1F4E2; Faire dire</option><option value="" data-i18n="m_raw">&#x2699; Commande</option></select>
   <input id="cmd-input" type="text" placeholder="Message ou commande...">
   <button class="btn btn-send" onclick="sendCmd()" data-i18n="send_btn">SEND</button>
   <button class="btn btn-icon" onclick="quickCmd('hello')" title="hello">&#x1F44B;</button>
@@ -236,6 +236,10 @@ hist_lbl:'HISTORIQUE CONV',brain_lbl:'DOSSIER BRAIN',brain_tip:'Injection lectur
 pres_lbl:'PRESENCE DETECTION',pcool_lbl:'COOLDOWN SALUTATIONS',theme_lbl:'THEME',fx_lbl:'EFFET DE FOND',fxint_lbl:'INTENSITE EFFET',fxspd_lbl:'VITESSE EFFET',
 save_btn:'SAUVEGARDER',save_note:'Micro, Whisper, Wake Word : restart du Bridge necessaire (bouton RESTART).',
 prof_ph:'Nom du nouveau profil...',msg_ph:'Message ou commande...',
+m_voice:'\u{1F4AC} Parler',m_say:'\u{1F4E2} Faire dire',m_raw:'⚙ Commande',
+ph_voice:'Parle a Claudius (passe par le LLM, il repond)...',
+ph_say:'Il prononce ce texte TEL QUEL (sans LLM)...',
+ph_raw:'oui · non · hello · think · blink · snap · sleep · wake',
 restart_confirm:'Restart Bridge + Voice ?',restart_ok:'Bridge relance !',here:'ICI',absent:'ABSENT',
 motor_daemon:'moteur daemon : gestes + presence OK',motor_legacy:'moteur en mode degrade (one-shot)',motor_error:'MOTEUR KO — Kinect absent ? (verifier alim 12V)',motor_unknown:'moteur : etat inconnu'},
 en:{conv_hdr:'CONVERSATION',logs_hdr:'BRIDGE LOGS',send_btn:'SEND',clear_btn:'CLEAR',
@@ -248,13 +252,20 @@ hist_lbl:'CONV HISTORY',brain_lbl:'BRAIN FOLDER',brain_tip:'Read-only injection 
 pres_lbl:'PRESENCE DETECTION',pcool_lbl:'GREETING COOLDOWN',theme_lbl:'THEME',fx_lbl:'BACKGROUND FX',fxint_lbl:'FX INTENSITY',fxspd_lbl:'FX SPEED',
 save_btn:'SAVE',save_note:'Mic, Whisper, Wake Word: Bridge restart required (RESTART button).',
 prof_ph:'New profile name...',msg_ph:'Message or command...',
+m_voice:'\u{1F4AC} Talk',m_say:'\u{1F4E2} Make him say',m_raw:'⚙ Command',
+ph_voice:'Talk to Claudius (goes through the LLM, he replies)...',
+ph_say:'He speaks this text AS-IS (no LLM)...',
+ph_raw:'oui · non · hello · think · blink · snap · sleep · wake',
 restart_confirm:'Restart Bridge + Voice?',restart_ok:'Bridge restarted!',here:'HERE',absent:'AWAY',
 motor_daemon:'motor daemon: gestures + presence OK',motor_legacy:'motor degraded (one-shot mode)',motor_error:'MOTOR DOWN — Kinect missing? (check 12V power)',motor_unknown:'motor: unknown state'}};
 function T(k){return (_i18n[_lang]||_i18n.fr)[k]||k;}
 window.applyLang=function(l){_lang=l;
 document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=T(el.getAttribute('data-i18n'));});
 document.querySelectorAll('[data-i18n-ph]').forEach(el=>{el.placeholder=T(el.getAttribute('data-i18n-ph'));});
-$('cmd-input').placeholder=T('msg_ph');}
+updatePh();}
+function updatePh(){const v=$('cmd-prefix').value;
+$('cmd-input').placeholder=T(v==='VOICE:'?'ph_voice':v==='SAY:'?'ph_say':'ph_raw');}
+$('cmd-prefix').addEventListener('change',updatePh);
 
 /* ===== Theme + FX ===== */
 window.applyTheme=function(t){const c=THEMES[t]||THEMES.dark;_curTheme=t;
