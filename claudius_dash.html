@@ -31,7 +31,7 @@ background:color-mix(in srgb,var(--panel) 80%,transparent);border-bottom:1px sol
 .tstats{margin-left:auto;display:flex;gap:14px;font-size:10px;color:var(--dim);white-space:nowrap;align-items:center;}
 .tstats b{color:var(--fg);font-weight:600;}
 .micbar{display:inline-block;width:90px;height:10px;border:1px solid var(--border);border-radius:5px;position:relative;overflow:hidden;background:color-mix(in srgb,var(--bg) 60%,transparent);}
-.micfill{display:block;height:100%;width:0%;background:color-mix(in srgb,var(--fg) 55%,transparent);transition:width .25s;}
+.micfill{position:absolute;top:0;left:0;bottom:0;width:0%;background:color-mix(in srgb,var(--fg) 55%,transparent);transition:width .25s;}
 .micfill.hot{background:#7ce38b;}
 .mictick{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--red);left:60%;}
 .win-ctrls{position:absolute;top:6px;right:10px;display:flex;gap:2px;}
@@ -108,7 +108,7 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
     <span class="pill" id="pill-presence">PRESENCE</span>
   </div>
   <div class="tstats">
-    <span class="micbar" id="micbar" title="niveau micro / seuil effectif">&#8203;<span class="micfill" id="micfill"></span><span class="mictick" id="mictick"></span></span>
+    <span class="micbar" id="micbar" title="niveau micro / seuil effectif"><span class="micfill" id="micfill"></span><span class="mictick" id="mictick"></span></span>
     <span id="sysload" title="impact systeme de Claudius">&#x26A1; --</span>
     <span data-i18n-skip>UPTIME <b id="st-uptime">--</b></span>
     <span><span data-i18n="exchanges">ECHANGES</span> <b id="st-exchanges">0</b></span>
