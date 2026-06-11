@@ -156,14 +156,17 @@ def _load_piper_bg():
         try:
             from piper import PiperVoice
             t = time.time()
-            log("Chargement Piper Jessica...", LOG_FILE, "PIPER")
-            _piper_voice = PiperVoice.load(PIPER_MODEL, config_path=PIPER_MODEL_JSON, use_cuda=True)
+            log("Chargement Piper Jessica (CPU)...", LOG_FILE, "PIPER")
+            # CPU depuis l'audit 2026-06-12 : bench reel = CPU (i7 4.8 GHz) AUSSI
+            # RAPIDE que CUDA sur ces modeles medium (0.3 s phrase courte) et ca
+            # libere 923 Mo de VRAM (mesure). Re-bencher si le CPU change.
+            _piper_voice = PiperVoice.load(PIPER_MODEL, config_path=PIPER_MODEL_JSON, use_cuda=False)
             log(f"Jessica prete en {time.time()-t:.1f}s", LOG_FILE, "PIPER")
 
             if os.path.exists(PIPER_MODEL2):
                 t2 = time.time()
-                log("Chargement Piper SIWIS (blend)...", LOG_FILE, "PIPER")
-                _piper_voice2 = PiperVoice.load(PIPER_MODEL2, config_path=PIPER_MODEL2_JSON, use_cuda=True)
+                log("Chargement Piper SIWIS (blend, CPU)...", LOG_FILE, "PIPER")
+                _piper_voice2 = PiperVoice.load(PIPER_MODEL2, config_path=PIPER_MODEL2_JSON, use_cuda=False)
                 log(f"SIWIS prete en {time.time()-t2:.1f}s", LOG_FILE, "PIPER")
         except Exception as e:
             log(f"ERR Piper: {e}", LOG_FILE, "PIPER")
@@ -217,7 +220,8 @@ def _tts_wait(text):
             subprocess.call([PYTHON, os.path.join(_KINECT_DIR, "KinectTTS.py"), text, "--local"],
                             creationflags=subprocess.CREATE_NO_WINDOW)
     finally:
-        time.sleep(1.0)  # laisser le son se dissiper avant de rouvrir le micro
+        time.sleep(0.5)  # marge anti-echo avant de rouvrir le micro (1.0 -> 0.5,
+        # audit 2026-06-12 — si Claudius s'auto-entend, remonter a 0.8)
         _speaking.clear()
         try:
             os.remove(TTS_LOCK_FILE)
@@ -693,7 +697,7 @@ def _write_transcript(who, text):
 def _handle_voice(text):
     log(f"VOICE -> {text[:60]}", LOG_FILE)
     if not _speaking.is_set():
-        sfx_play("listen", blocking=True)
+        sfx_play("listen")  # non bloquant : joue PENDANT le traitement (-0.25 s)
 
     # 1. Commandes utilitaires (locales, zéro latence API)
     util_reply = check_utility(text, on_alarm_callback=_on_timer_alarm)
@@ -844,7 +848,7 @@ def watch_cmd():
         except Exception as e:
             log(f"watch ERR: {e}", LOG_FILE)
             _priority_evt.clear()
-        time.sleep(0.3)
+        time.sleep(0.1)  # 0.3 -> 0.1 : -0.1 s de latence moyenne (audit 2026-06-12)
 
 # ====================================================================
 # WATCHDOG VOICE
