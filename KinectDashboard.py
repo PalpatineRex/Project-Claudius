@@ -37,7 +37,7 @@ _DEFAULT_SETTINGS = {
     "whisper_model": "small", "wake_word": "claudius",
     "mic_name": "BIRD UM1", "brain_path": "", "audio_ignore": [],
     "bg_effect": "auto", "bg_intensity": 0.7, "bg_speed": 1.0, "lang": "fr",
-    "theme_custom": {},
+    "theme_custom": {}, "themes_custom": {},
 }
 _boot_time = time.time()
 _auto_restart_enabled = True

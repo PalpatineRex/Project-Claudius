@@ -183,13 +183,18 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
 <div class="row"><label class="lbl" data-i18n="pcool_lbl">COOLDOWN SALUTATIONS</label><input type="range" id="set-pcool" min="60" max="3600" step="60" value="1800"><span class="val" id="set-pcool-val">30m</span></div>
 
 <h3 data-i18n="sec_look">&#x25B8; APPARENCE</h3>
-<div class="row"><label class="lbl" data-i18n="theme_lbl">THEME</label><select id="set-theme" onchange="onThemePick(this.value)"></select></div>
+<div class="row"><label class="lbl" data-i18n="theme_lbl">THEME</label><select id="set-theme" onchange="onThemePick(this.value)"></select>
+<button class="btn btn-icon" onclick="toggleCustom()" title="editer les couleurs">&#x1F3A8;</button>
+<button class="btn btn-icon" onclick="saveTheme()" title="sauver comme theme nomme">&#x1F4BE;</button>
+<button class="btn btn-icon" onclick="exportThemes()" title="exporter les themes (JSON)">&#x1F4E4;</button>
+<button class="btn btn-icon" onclick="document.getElementById('theme-file').click()" title="importer des themes (JSON)">&#x1F4E5;</button>
+<input type="file" id="theme-file" accept=".json" style="display:none" onchange="importThemes(this)"></div>
 <div class="row" id="custom-colors" style="display:none"><label class="lbl" data-i18n="custom_lbl">COULEURS CUSTOM</label>
-<input type="color" id="cc-bg" title="fond" onchange="applyTheme('custom')">
-<input type="color" id="cc-fg" title="texte" onchange="applyTheme('custom')">
-<input type="color" id="cc-panel" title="panneaux" onchange="applyTheme('custom')">
-<input type="color" id="cc-border" title="bordures" onchange="applyTheme('custom')">
-<input type="color" id="cc-red" title="accent" onchange="applyTheme('custom')"></div>
+<input type="color" id="cc-bg" title="fond" onchange="applyTheme('draft')">
+<input type="color" id="cc-fg" title="texte" onchange="applyTheme('draft')">
+<input type="color" id="cc-panel" title="panneaux" onchange="applyTheme('draft')">
+<input type="color" id="cc-border" title="bordures" onchange="applyTheme('draft')">
+<input type="color" id="cc-red" title="accent" onchange="applyTheme('draft')"></div>
 <div class="row"><label class="lbl" data-i18n="fx_lbl">EFFET DE FOND</label><select id="set-fx" onchange="applyFx()">
 <option value="auto">auto (theme)</option><option value="none">aucun</option><option value="dots">dots</option><option value="synapse">synapse</option><option value="rain">rain</option><option value="constellations">constellations</option><option value="perlin-flow">perlin-flow</option><option value="petals">petals</option><option value="sparkles">sparkles</option><option value="embers">embers</option></select></div>
 <div class="row"><label class="lbl" data-i18n="fxint_lbl">INTENSITE EFFET</label><input type="range" id="set-fxint" min="0" max="100" step="5" value="70" oninput="applyFx()"><span class="val" id="set-fxint-val">70%</span></div>
@@ -222,12 +227,14 @@ const THEMES = {
   gpt:        { bg:'#212121', fg:'#ececec', panel:'#171717', border:'#424242', red:'#949494' },
   claude:     { bg:'#262624', fg:'#f5f4f0', panel:'#30302e', border:'#4a4a47', red:'#c6613f' },
   cute:       { bg:'#fff0f5', fg:'#d4608a', panel:'#fff8fa', border:'#f0c0d0', red:'#ff6b9d' },
+  'ambulance 🚑': { bg:'#0a0e1c', fg:'#eaf1ff', panel:'#111a31', border:'#2f55c4', red:'#e23440' },
 };
 const THEME_PATTERN = { dark:'none', light:'dots', midnight:'rain', paper:'dots', cyberpunk:'synapse',
   retrowave:'embers', forest:'petals', ocean:'constellations', terminal:'perlin-flow', organs:'rain',
-  ume:'petals', cute:'sparkles', copper:'embers', lavender:'sparkles', gpt:'none', claude:'none' };
+  ume:'petals', cute:'sparkles', copper:'embers', lavender:'sparkles', gpt:'none', claude:'none',
+  'ambulance 🚑':'sparkles' };
 const THEME_FX_COLOR = { midnight:'#ffffff', organs:'#451616', cute:'#ff8cb8', ume:'#f5a0c0' };
-const THEME_FX_INT = { midnight:0.5, terminal:0.8, organs:0.65 };
+const THEME_FX_INT = { midnight:0.5, terminal:0.8, organs:0.65, 'ambulance 🚑':0.55 };
 
 let cLen=0,lHash='',_lang='fr',_curTheme='dark';
 const $=id=>document.getElementById(id);
@@ -244,7 +251,7 @@ $('cmd-input').placeholder=T(v==='VOICE:'?'ph_voice':v==='SAY:'?'ph_say':'ph_raw
 $('cmd-prefix').addEventListener('change',updatePh);
 
 /* ===== Theme + FX ===== */
-window.applyTheme=function(t){const c=t==='custom'?ccVals():(THEMES[t]||THEMES.dark);_curTheme=t;
+window.applyTheme=function(t){const c=t==='draft'?ccVals():(THEMES[t]||_customLib[t]||THEMES.dark);if(t!=='draft')_curTheme=t;
 const r=document.documentElement.style;
 r.setProperty('--bg',c.bg);r.setProperty('--fg',c.fg);r.setProperty('--panel',c.panel);
 r.setProperty('--border',c.border);r.setProperty('--red',c.red);
@@ -326,14 +333,28 @@ const SLIDERS=[['set-vol','set-vol-val',v=>v+'%'],['set-mic','set-mic-val',v=>v]
 ['set-tokens','set-tokens-val',v=>v],['set-timeout','set-timeout-val',v=>v+'s'],['set-temp','set-temp-val',v=>(v/100).toFixed(1)],
 ['set-hist','set-hist-val',v=>v],['set-pcool','set-pcool-val',v=>Math.round(v/60)+'m']];
 SLIDERS.forEach(([id,vid,f])=>{$(id).addEventListener('input',function(){$(vid).textContent=f(this.value);});});
-function fillThemeSelect(){const sel=$('set-theme');sel.innerHTML='';Object.keys(THEMES).forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;sel.appendChild(o);});
-const oc=document.createElement('option');oc.value='custom';oc.textContent='★ custom';sel.appendChild(oc);}
+let _customLib={};
+function fillThemeSelect(){const sel=$('set-theme');const cur=sel.value;sel.innerHTML='';
+Object.keys(THEMES).forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;sel.appendChild(o);});
+Object.keys(_customLib).forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent='★ '+n;sel.appendChild(o);});
+if(cur)sel.value=cur;}
+window.toggleCustom=function(){const r=$('custom-colors');const show=r.style.display==='none';
+r.style.display=show?'flex':'none';if(show)ccFill(THEMES[_curTheme]||_customLib[_curTheme]||THEMES.dark);}
+window.saveTheme=async function(){const name=prompt('Nom du theme :','');
+if(!name)return;_customLib[name.trim()]=ccVals();fillThemeSelect();$('set-theme').value=name.trim();_curTheme=name.trim();
+await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({themes_custom:_customLib,theme:name.trim()})});}
+window.exportThemes=function(){const blob=new Blob([JSON.stringify({claudius_themes:1,themes:_customLib},null,2)],{type:'application/json'});
+const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='claudius_themes.json';a.click();URL.revokeObjectURL(a.href);}
+window.importThemes=function(inp){const f=inp.files[0];if(!f)return;const rd=new FileReader();
+rd.onload=async()=>{try{const d=JSON.parse(rd.result);const src=d.themes||d;let n=0;
+Object.entries(src).forEach(([k,v])=>{if(v&&v.bg&&v.fg){_customLib[k]=v;n++;}});
+fillThemeSelect();await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({themes_custom:_customLib})});
+alert(n+' theme(s) importe(s)');}catch(e){alert('JSON invalide');}inp.value='';};rd.readAsText(f);}
 function fillLangSelect(){const sel=$('set-lang');sel.innerHTML='';Object.entries(LANG_NAMES).forEach(([code,name])=>{const o=document.createElement('option');o.value=code;o.textContent=name;sel.appendChild(o);});}
 function ccVals(){return{bg:$('cc-bg').value,fg:$('cc-fg').value,panel:$('cc-panel').value,border:$('cc-border').value,red:$('cc-red').value};}
 function ccFill(c){$('cc-bg').value=c.bg||'#282c34';$('cc-fg').value=c.fg||'#9cdef2';$('cc-panel').value=c.panel||'#111111';$('cc-border').value=c.border||'#355a66';$('cc-red').value=c.red||'#e06c75';}
-window.onThemePick=function(t){$('custom-colors').style.display=t==='custom'?'flex':'none';
-if(t==='custom'&&!$('cc-bg').dataset.init){ccFill(THEMES[_curTheme]||THEMES.dark);$('cc-bg').dataset.init='1';}
-applyTheme(t);}
+window.onThemePick=function(t){applyTheme(t);
+if($('custom-colors').style.display!=='none')ccFill(THEMES[t]||_customLib[t]||THEMES.dark);}
 async function fillMicSelect(current){try{const r=await fetch('/api/devices');const d=await r.json();
 const sel=$('set-micname');sel.innerHTML='';
 d.inputs.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
@@ -355,9 +376,10 @@ $('set-temp').value=Math.round((s.temperature??0.7)*100);$('set-hist').value=s.h
 $('set-brain').value=s.brain_path||'';
 $('set-presence').checked=s.presence_enabled!==false;
 $('set-pcool').value=s.presence_cooldown||1800;
-if(s.theme_custom&&s.theme_custom.bg){ccFill(s.theme_custom);$('cc-bg').dataset.init='1';}
-$('set-theme').value=(THEMES[s.theme]||s.theme==='custom')?s.theme:'dark';
-$('custom-colors').style.display=$('set-theme').value==='custom'?'flex':'none';
+_customLib=s.themes_custom||{};
+if(s.theme_custom&&s.theme_custom.bg&&!Object.keys(_customLib).length)_customLib['perso']=s.theme_custom;
+fillThemeSelect();
+$('set-theme').value=(THEMES[s.theme]||_customLib[s.theme])?s.theme:'dark';
 $('set-fx').value=s.bg_effect||'auto';$('set-fxint').value=Math.round((s.bg_intensity??0.7)*100);$('set-fxspd').value=Math.round((s.bg_speed??1.0)*100);
 $('set-lang').value=s.lang||'fr';
 SLIDERS.forEach(([id,vid,f])=>{$(vid).textContent=f($(id).value);});
@@ -371,7 +393,7 @@ snap_provider:$('set-sprov').value.trim(),snap_model:$('set-smodel').value.trim(
 max_tokens:parseInt($('set-tokens').value),llm_timeout:parseInt($('set-timeout').value),temperature:$('set-temp').value/100,
 history_size:parseInt($('set-hist').value),brain_path:$('set-brain').value.trim(),
 presence_enabled:$('set-presence').checked,presence_cooldown:parseInt($('set-pcool').value),
-theme:$('set-theme').value,theme_custom:ccVals(),bg_effect:$('set-fx').value,bg_intensity:parseInt($('set-fxint').value)/100,bg_speed:parseInt($('set-fxspd').value)/100,
+theme:$('set-theme').value,themes_custom:_customLib,bg_effect:$('set-fx').value,bg_intensity:parseInt($('set-fxint').value)/100,bg_speed:parseInt($('set-fxspd').value)/100,
 lang:$('set-lang').value};}
 window.saveSettings=async function(){try{
 await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
