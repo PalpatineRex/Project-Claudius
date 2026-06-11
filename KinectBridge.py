@@ -664,6 +664,184 @@ def _ask_claude(text, image_path=None):
         return None
 
 # ====================================================================
+# LLM STREAMING + TTS PIPELINE (audit 2026-06-12 : -1.5 a -2.5 s percus)
+# La reponse est decoupee en phrases AU FIL du stream ; chaque phrase est
+# synthetisee pendant que la precedente se joue et que le LLM continue.
+# ====================================================================
+def _iter_sse_sentences(resp):
+    """Decoupe un stream SSE OpenAI-compat en phrases completes."""
+    buf = ""
+    for raw in resp:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            delta = json.loads(data)["choices"][0]["delta"]
+        except Exception:
+            continue
+        piece = delta.get("content") or ""
+        if not piece:
+            continue
+        buf += piece
+        while True:
+            m = re.search(r'[.!?…]+\s', buf)
+            if not m or m.end() < 8:  # trop court (« Oui. ») : attendre la suite
+                break
+            yield buf[:m.end()].strip()
+            buf = buf[m.end():]
+    tail = buf.strip()
+    if tail:
+        yield tail
+
+
+def _ask_claude_stream(text, on_sentence):
+    """Path OpenAI-compat (DeepSeek/OpenRouter/OpenAI) en stream=True.
+    Appelle on_sentence(phrase) au fil de l'eau. Retourne la reponse complete,
+    ou None si echec AVANT la premiere phrase (l'appelant peut fallback)."""
+    global _conversation_history
+    settings = _load_settings()
+    max_tokens_llm = settings.get("max_tokens", 500)
+    llm_timeout = settings.get("llm_timeout", 25)
+    hist_size = settings.get("history_size", MAX_HISTORY)
+    v_provider = settings.get("voice_provider", "deepseek")
+    v_model = settings.get("voice_model", DEEPSEEK_MODEL)
+    temp = settings.get("temperature", 0.7)
+    cur_url, cur_key, _ = _resolve_provider(v_provider, settings.get("voice_api_key", ""))
+
+    with _history_lock:
+        _conversation_history.append({"role": "user", "content": text})
+        messages = list(_conversation_history)
+
+    system = _load_system_prompt()
+    brain_ctx = _load_brain_context(text)
+    if brain_ctx:
+        system += "\n\n" + brain_ctx
+        log("BRAIN: contexte cerveau injecte dans le prompt", LOG_FILE)
+
+    oai_messages = [{"role": "system", "content": system}]
+    for m in messages:
+        c = m["content"]
+        if isinstance(c, list):
+            c = " ".join(b.get("text", "") for b in c if b.get("type") == "text").strip()
+            if not c:
+                continue
+        oai_messages.append({"role": m["role"], "content": c})
+    payload = json.dumps({"model": v_model, "max_tokens": max_tokens_llm,
+                          "messages": oai_messages, "temperature": temp,
+                          "stream": True}).encode("utf-8")
+    req = urllib.request.Request(cur_url, data=payload, method="POST", headers={
+        "Content-Type": "application/json", "Authorization": f"Bearer {cur_key}"})
+    parts = []
+    try:
+        with urllib.request.urlopen(req, timeout=llm_timeout) as resp:
+            for sentence in _iter_sse_sentences(resp):
+                parts.append(sentence)
+                on_sentence(sentence)
+    except Exception as e:
+        log(f"ERR llm stream: {e}", LOG_FILE)
+        if not parts:
+            with _history_lock:
+                if _conversation_history and _conversation_history[-1]["role"] == "user":
+                    _conversation_history.pop()
+            return None
+    reply = " ".join(parts).strip()
+    log(f"LLM: {v_provider}/{v_model} (stream, {len(parts)} phrases)", LOG_FILE)
+    with _history_lock:
+        _conversation_history.append({"role": "assistant", "content": reply})
+        if len(_conversation_history) > hist_size * 2:
+            _conversation_history = _conversation_history[-(hist_size * 2):]
+    return reply
+
+
+def _voice_streamed(text):
+    """Pipeline complet : LLM stream -> queue phrases -> synthese (thread)
+    -> lecture. Le lock TTS couvre TOUTE la sequence (Voice n'ecoute pas)."""
+    import queue as _q
+    sentences, audios = _q.Queue(), _q.Queue(maxsize=2)
+    reply_box = [None]
+
+    def _producer():
+        reply_box[0] = _ask_claude_stream(text, on_sentence=sentences.put)
+        sentences.put(None)
+
+    def _synth_worker():
+        first = True
+        while True:
+            s = sentences.get()
+            if s is None:
+                audios.put(None)
+                return
+            if first:
+                first = False
+                gesture = _gesture_for(s)
+                if gesture:
+                    threading.Thread(target=_run, args=(gesture,), daemon=True).start()
+            txt = reaccentuate(s)
+            syn_cfg = None
+            try:
+                speed = float(_load_settings().get("tts_speed", 1.0))
+                if abs(speed - 1.0) > 0.01:
+                    from piper import SynthesisConfig
+                    syn_cfg = SynthesisConfig(length_scale=1.0 / max(0.5, min(speed, 2.0)))
+            except Exception:
+                pass
+            audio = None
+            with _piper_lock:
+                try:
+                    t = time.time()
+                    if _piper_voice2 is not None:
+                        audio = synth_both(_piper_voice, _piper_voice2, txt, syn_cfg)
+                    elif _piper_voice is not None:
+                        frames = [c.audio_int16_array for c in _piper_voice.synthesize(txt, syn_cfg)]
+                        if frames:
+                            audio = np.concatenate(frames).astype(np.float32)
+                    if audio is not None:
+                        log(f"TTS phrase: {time.time()-t:.2f}s", LOG_FILE, "TTS")
+                except Exception as e:
+                    log(f"ERR tts stream synth: {e}", LOG_FILE, "TTS")
+            audios.put(audio)
+
+    _piper_ready.wait(timeout=20)
+    if _piper_voice is None:
+        return None  # piper KO : l'appelant prendra le chemin classique
+
+    threading.Thread(target=_producer, daemon=True).start()
+    threading.Thread(target=_synth_worker, daemon=True).start()
+
+    _speaking.set()
+    try:
+        open(TTS_LOCK_FILE, "w").close()
+    except Exception:
+        pass
+    played = False
+    try:
+        sample_rate = _piper_voice.config.sample_rate
+        while True:
+            audio = audios.get()
+            if audio is None:
+                break
+            try:
+                sd.play(audio / 32768.0, samplerate=sample_rate)
+                sd.wait()
+                played = True
+            except Exception as e:
+                log(f"ERR tts stream play: {e}", LOG_FILE, "TTS")
+    finally:
+        time.sleep(0.5)
+        _speaking.clear()
+        try:
+            os.remove(TTS_LOCK_FILE)
+        except Exception:
+            pass
+    if reply_box[0] is None and not played:
+        return None
+    return reply_box[0] or ""
+
+
+# ====================================================================
 # GESTES
 # ====================================================================
 _GESTURE_WORDS = {}
@@ -723,7 +901,17 @@ def _handle_voice(text):
         if not snap_path:
             log("VISION: pas de snap dispo", LOG_FILE)
 
-    # 3. Appel LLM
+    # 3. Appel LLM — STREAMING par phrase quand possible (audit 2026-06-12 :
+    # Claudius parle des la 1re phrase generee, -1.5 a -2.5 s percus)
+    threading.Thread(target=_run, args=("think",), daemon=True).start()
+    v_provider = _load_settings().get("voice_provider", "deepseek").lower()
+    if snap_path is None and v_provider != "anthropic":
+        reply = _voice_streamed(text)
+        if reply is not None:
+            log(f"VOICE reply: {reply[:80]}", LOG_FILE)
+            _write_transcript("Claudius", reply)
+            return
+        # stream KO avant la moindre phrase -> fallback chemin classique
     result_box = [None]
 
     def _query():
@@ -734,7 +922,6 @@ def _handle_voice(text):
 
     t = threading.Thread(target=_query, daemon=True)
     t.start()
-    threading.Thread(target=_run, args=("think",), daemon=True).start()
     t.join(timeout=25 if snap_path else 20)
     reply = result_box[0] or "Desole, je suis hors ligne."
 
