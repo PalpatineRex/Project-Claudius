@@ -23,14 +23,7 @@ In the folder, use the **`.lnk` shortcuts** (with the nice icons) or the **`.bat
 
 ### Option 2: Dashboard exe
 
-Double-click **`ClaudiusDashboard.exe`** — a native **frameless** window opens (no browser, no title bar: drag the top bar, window buttons built in). If the dashboard is already running, it just opens a new window without duplicating the server. Window size and position are remembered.
-
-### What each script does
-
-- **`start_all.bat`** → Starts KinectBridge (the brain) + KinectDashboard (web UI `http://localhost:5005`)
-- **`stop_claudius.bat`** → Stops Bridge + Voice + Motor. The dashboard stays up to show statuses (OFF). A restart from the dashboard or a `start_all` brings everything back.
-- **`restart_claudius.bat`** → Full Stop then Start.
-- **`start_dashboard.bat`** → Dashboard only (if the Bridge is already running).
+Double-click **`ClaudiusDashboard.exe`** — a native **frameless** window opens (no browser, no title bar: drag the top bar, double-click it to maximize, grab any edge to resize, window buttons built in). Size and position are remembered — even after a kill. If the dashboard is already running, it just opens a new window without duplicating the server.
 
 ---
 
@@ -38,15 +31,18 @@ Double-click **`ClaudiusDashboard.exe`** — a native **frameless** window opens
 
 | Feature | Description |
 |----------|-------------|
-| 🎤 **Speech recognition** | You speak, Claudius understands — mic picked **by name** (USB index drift proof) |
-| 🧠 **Intelligence** | Universal LLM — DeepSeek, Anthropic, OpenRouter, OpenAI |
-| 🗣️ **Blended voice** | A unique voice (Jessica + SIWIS merged), ~1s to reply |
-| 😃 **Gestures** | Yes, no, hello, thinking — the Kinect head moves |
+| 🎤 **Speech recognition** | faster-whisper `medium` (CUDA) — mic picked **by name** (USB index drift proof). Tip: the **Kinect mic array** hears you across the room |
+| ⏱️ **Sentence streaming** | He starts speaking as soon as the FIRST sentence is generated (~3s perceived latency, down from ~6) |
+| 🧠 **Intelligence** | Universal LLM — DeepSeek, Anthropic, OpenRouter, OpenAI (streaming on OpenAI-compatible providers) |
+| 📚 **Brain hook** | Optional read-only injection of your project files into the prompt (anti-hallucination) — BRAIN pill shows status |
+| 🗣️ **Blended voice** | A unique voice (Jessica + SIWIS spectral blend) — runs on **CPU** (as fast as CUDA on these models, frees ~1 GB of VRAM) |
+| 😃 **Gestures** | Yes, no, hello, thinking — the Kinect head moves, and the dashboard tells the TRUTH about motor health |
 | 👀 **Presence** | Claudius knows if you're there, and how far away |
 | 📷 **Vision** | "Look at my desk" → Claudius takes a photo and describes it |
 | ⏰ **Utilities** | Time, date, weather, timer, reminders — zero API latency |
-| 🖥️ **Dashboard** | Real-time interface: conversation, logs, controls, 10 themes |
-| 🌍 **Bilingual** | Dashboard UI in FR/EN |
+| 🖥️ **Dashboard** | Frameless real-time UI: conversation, logs, **live mic meter**, **system impact monitor** (CPU/RAM/VRAM), honest status pills |
+| 🎨 **Themes** | 16 presets (incl. `ambulance 🚑`) + **named custom themes** (color pickers, save/export/import JSON) + animated background FX |
+| 🌍 **10 languages** | Dashboard UI in FR, EN, ES, DE, IT, PT, RU, JA, ZH, KO |
 
 ---
 
@@ -56,8 +52,8 @@ Claudius supports several LLM providers. Configure them in **Dashboard > OPTIONS
 
 | Provider | Models | Usage |
 |----------|---------|-------|
-| **deepseek** | `deepseek-v4-flash` (default), `deepseek-v4-pro` | Voice — fast and cheap |
-| **anthropic** | `claude-haiku-4-5-20251001`, `claude-sonnet-4-20250514` | Vision (snap) — the only guaranteed multimodal |
+| **deepseek** | `deepseek-v4-flash` (default), `deepseek-v4-pro` | Voice — fast, cheap, streamed |
+| **anthropic** | `claude-haiku-4-5-20251001`, … | Vision (snap) — the only guaranteed multimodal |
 | **openrouter** | 500+ models (format: `provider/model`) | Universal access |
 | **openai** | `gpt-4o`, etc. | Compatible |
 
@@ -67,19 +63,17 @@ API keys are set in the dashboard or via the `api_key.txt` (Anthropic) and `deep
 
 ## 🖥️ Dashboard
 
-The dashboard gives a real-time view of Claudius:
-
-- **Conversation panel** — Live transcript David ↔ Claudius
-- **Logs panel** — Bridge logs, filtered and color-coded by type
-- **Controls** — Send commands, restart the Bridge
-- **OPTIONS** — Full configuration:
-  - Audio: SFX volume, mic threshold, TTS speed, Whisper model, wake word
+- **Topbar** — status pills (BRIDGE / VOICE / MOTOR / **BRAIN n** / presence), **live mic meter** (fill = level, red tick = the EFFECTIVE threshold), **⚡ system impact** (CPU/RAM/VRAM of all Claudius processes, per-process detail on hover), window buttons
+- **Conversation panel** — live chat bubbles David ↔ Claudius
+- **Logs panel** — Bridge logs, filtered and color-coded
+- **Command bar** — 💬 Talk (through the LLM) / 📢 Make him say (raw TTS, no LLM) / ⚙ Command (`oui non hello think blink snap sleep wake`) + quick gesture buttons
+- **OPTIONS** — full configuration:
+  - Audio: SFX volume, **mic picker (by name)**, threshold (floor — the meter shows the real one), TTS speed, Whisper model, **wake words (comma-separated tags)**
   - LLM: provider/model/key for voice and vision, temperature, tokens, timeout
-  - Profiles: save/load complete configurations
-  - System: presence, cooldown, theme (10 themes), language (FR/EN)
-
-### Available themes
-16 themes shared with the Odysseus dashboard (dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute) + animated background effects (rain, embers, synapse, constellations, petals, sparkles, perlin-flow) with intensity/speed controls.
+  - Brain: folder of your knowledge base (read-only injection)
+  - Profiles: save/load complete configurations + **DEFAULT** button (factory settings)
+  - System: presence, greeting cooldown, **theme + custom colors + FX** (intensity/speed), language
+- Any JS error shows up in red in the topbar — no silent failures.
 
 ---
 
@@ -87,19 +81,19 @@ The dashboard gives a real-time view of Claudius:
 
 ```
 claudius/
-├── start_all.bat              ⬅ Start everything
+├── start_all.bat              ⬅ Start everything (targeted kill — never touches other Python)
 ├── stop_claudius.bat          ⬅ Stop (Bridge/Voice/Motor)
 ├── restart_claudius.bat       ⬅ Restart
 ├── start_dashboard.bat        ⬅ Dashboard only
-├── ClaudiusDashboard.exe      ⬅ Standalone dashboard (native window)
+├── ClaudiusDashboard.exe      ⬅ Standalone frameless dashboard window
 │
-├── claudius_dash.html         🎨 Dashboard UI (runtime-loaded, edit without rebuild)
-├── dashboard-fx.js            ✨ Background effects engine (shared with Odysseus dashboard)
-│
-├── KinectBridge.py            🧠 Brain: LLM, voice, motor, utilities
-├── KinectDashboard.py         🖥️ Web UI (localhost:5005)
-├── KinectVoice.py             🎤 Speech recognition (faster-whisper)
-├── KinectMotor.exe            🦾 Kinect motor (C# daemon)
+├── KinectBridge.py            🧠 Brain: LLM (streaming), TTS pipeline, motor, utilities, Brain hook
+├── KinectDashboard.py         🖥️ Flask API + native window (localhost:5005)
+├── claudius_dash.html         🎨 Dashboard UI (runtime-loaded: edit without rebuild)
+├── claudius_i18n.js           🌍 Dashboard translations (10 languages)
+├── dashboard-fx.js            ✨ Background FX engine (shared with the Odysseus dashboard)
+├── KinectVoice.py             🎤 Speech recognition (faster-whisper, mic by name, level meter)
+├── KinectMotor.exe            🦾 Kinect motor daemon (C#) — honest error reporting
 ├── KinectMotor.cs             🦾 Motor source
 │
 ├── claudius_sfx.py            🔊 Sound effects (numpy, in RAM)
@@ -110,7 +104,7 @@ claudius/
 ├── claudius_settings.json     ⚙️ Live config (read by Bridge on every call)
 ├── claudius_profiles.json     👤 Saved profiles
 ├── claudius_window.json       📐 Dashboard window size/position
-├── memory.json                🧠 Long-term memory (50 entries)
+├── memory.json                🧠 Local long-term memory (session summaries)
 │
 ├── api_key.txt                🔑 Anthropic API key
 ├── deepseek_key.txt           🔑 DeepSeek API key
@@ -123,17 +117,17 @@ claudius/
 ## 🔧 Requirements
 
 - **Python** 3.10+ (tested on 3.14) with pip
-- **NVIDIA GPU** recommended (CUDA for Whisper + voice)
+- **NVIDIA GPU** recommended (CUDA for Whisper — Piper runs on CPU by design)
 - **Xbox 360 Kinect v1** + Kinect SDK 1.8
-- **USB mic** (Bird UM1 recommended)
-- **Python packages**: flask, faster-whisper, sounddevice, numpy, scipy, piper-tts
+- **Mic**: the Kinect's own 4-mic array works great across the room; any USB mic works too (picked by name)
+- **Python packages**: flask, faster-whisper, sounddevice, numpy, scipy, piper-tts, pywebview, psutil, pycaw
 
 ## 📋 System info
 
-- **Latency**: ~2.5 to 3.5 seconds (end of speech → start of reply)
-- **API cost**: ~€0.70/month with DeepSeek V4 Flash
-- **Pipeline**: Bird UM1 → faster-whisper → wake word → Bridge → LLM (+ optional Brain context injection) → Piper TTS blend → sounddevice → KinectMotor
-- **Honest motor status**: the dashboard MOTOR pill shows daemon / degraded / DOWN (no more fake "OK")
+- **Latency**: ~3 to 3.5 seconds perceived (end of speech → start of reply) thanks to sentence streaming
+- **Footprint**: ~1.5% CPU, ~2 GB RAM, ~750 MB VRAM (whisper only — Piper is CPU)
+- **API cost**: under €1/month with DeepSeek V4 Flash
+- **Pipeline**: mic (by name) → faster-whisper medium → wake tags → Bridge → LLM stream (+ optional Brain context) → sentence-by-sentence Piper blend (CPU) → sounddevice → KinectMotor
 
 ---
 
