@@ -136,6 +136,20 @@ def api_stats():
                     "motor_status": motor_status,
                     "mic_level": mic_level, "mic_threshold": mic_threshold})
 
+@app.route("/api/miclevel")
+def api_miclevel():
+    """Vu-metre : poll leger et rapide (la jauge a son propre rythme, 400 ms)."""
+    level, threshold = -1, -1
+    try:
+        lf = os.path.join(_DATA_DIR, "voice_level.txt")
+        if time.time() - os.path.getmtime(lf) < 3:
+            parts = open(lf).read().strip().split(";")
+            level = int(float(parts[0]))
+            if len(parts) > 1:
+                threshold = int(float(parts[1]))
+    except Exception: pass
+    return jsonify({"level": level, "threshold": threshold})
+
 @app.route("/api/devices")
 def api_devices():
     """Micros disponibles (hostapi 0 = MME), dedupliques — pour le selecteur

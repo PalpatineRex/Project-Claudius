@@ -149,6 +149,7 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
 <div class="tip" data-i18n="mic_dev_tip">Choisi PAR NOM (les index USB glissent quand on branche un peripherique). Restart Bridge pour appliquer.</div>
 <div class="row"><label class="lbl" data-i18n="vol_lbl">VOLUME SFX</label><input type="range" id="set-vol" min="0" max="100" value="30"><span class="val" id="set-vol-val">30%</span></div>
 <div class="row"><label class="lbl" data-i18n="mic_lbl">SEUIL MICRO (RMS)</label><input type="range" id="set-mic" min="200" max="2000" step="50" value="500"><span class="val" id="set-mic-val">500</span></div>
+<div class="tip" data-i18n="mic_tip">PLANCHER : le seuil EFFECTIF = max(ce reglage, ambiant x1.5 calibre au boot). Le tick rouge du vu-metre (topbar) = le seuil effectif reel.</div>
 <div class="row"><label class="lbl" data-i18n="tts_lbl">VITESSE TTS</label><input type="range" id="set-tts" min="70" max="130" step="5" value="100"><span class="val" id="set-tts-val">1.0x</span></div>
 <div class="row"><label class="lbl" data-i18n="whisper_lbl">MODELE WHISPER</label><select id="set-whisper"><option value="tiny">tiny</option><option value="base">base</option><option value="small" selected>small</option><option value="medium">medium</option></select></div>
 <div class="row"><label class="lbl" data-i18n="wake_lbl">MOT-CLE WAKE</label><input type="text" id="set-wake" value="claudius"></div>
@@ -229,7 +230,7 @@ const _i18n={fr:{conv_hdr:'CONVERSATION',logs_hdr:'BRIDGE LOGS',send_btn:'SEND',
 exchanges:'ECHANGES',memories:'SOUVENIRS',
 sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / IA',sec_brain:'▸ CERVEAU (BRAIN)',sec_profiles:'▸ PROFILS',sec_system:'▸ SYSTEME',sec_look:'▸ APPARENCE',
 mic_dev_lbl:'MICRO',mic_dev_tip:'Choisi PAR NOM (les index USB glissent quand on branche un peripherique). Restart Bridge pour appliquer.',
-vol_lbl:'VOLUME SFX',mic_lbl:'SEUIL MICRO (RMS)',tts_lbl:'VITESSE TTS',whisper_lbl:'MODELE WHISPER',wake_lbl:'MOT-CLE WAKE',
+vol_lbl:'VOLUME SFX',mic_lbl:'SEUIL MICRO (RMS)',mic_tip:'PLANCHER : le seuil EFFECTIF = max(ce reglage, ambiant x1.5 calibre au boot). Le tick rouge du vu-metre (topbar) = le seuil effectif reel.',tts_lbl:'VITESSE TTS',whisper_lbl:'MODELE WHISPER',wake_lbl:'MOT-CLE WAKE',
 vprov_sub:'Voix (reponses texte)',sprov_sub:'Vision (commande snap)',vkey_lbl:'CLE API VOIX',skey_lbl:'CLE API VISION',
 hist_lbl:'HISTORIQUE CONV',brain_lbl:'DOSSIER BRAIN',brain_tip:'Injection lecture seule des fiches projets dans le prompt (anti-invention). Vide pour desactiver.',
 pres_lbl:'PRESENCE DETECTION',pcool_lbl:'COOLDOWN SALUTATIONS',theme_lbl:'THEME',fx_lbl:'EFFET DE FOND',fxint_lbl:'INTENSITE EFFET',fxspd_lbl:'VITESSE EFFET',
@@ -241,7 +242,7 @@ en:{conv_hdr:'CONVERSATION',logs_hdr:'BRIDGE LOGS',send_btn:'SEND',clear_btn:'CL
 exchanges:'EXCHANGES',memories:'MEMORIES',
 sec_audio:'▸ AUDIO',sec_llm:'▸ LLM / AI',sec_brain:'▸ BRAIN',sec_profiles:'▸ PROFILES',sec_system:'▸ SYSTEM',sec_look:'▸ LOOK & FEEL',
 mic_dev_lbl:'MIC',mic_dev_tip:'Picked BY NAME (USB indexes shift when devices are plugged). Bridge restart required.',
-vol_lbl:'SFX VOLUME',mic_lbl:'MIC THRESHOLD (RMS)',tts_lbl:'TTS SPEED',whisper_lbl:'WHISPER MODEL',wake_lbl:'WAKE WORD',
+vol_lbl:'SFX VOLUME',mic_lbl:'MIC THRESHOLD (RMS)',mic_tip:'FLOOR value: the EFFECTIVE threshold = max(this, ambient x1.5 calibrated at boot). The red tick on the topbar meter shows the real effective threshold.',tts_lbl:'TTS SPEED',whisper_lbl:'WHISPER MODEL',wake_lbl:'WAKE WORD',
 vprov_sub:'Voice (text responses)',sprov_sub:'Vision (snap command)',vkey_lbl:'VOICE API KEY',skey_lbl:'VISION API KEY',
 hist_lbl:'CONV HISTORY',brain_lbl:'BRAIN FOLDER',brain_tip:'Read-only injection of project files into the prompt (anti-hallucination). Empty to disable.',
 pres_lbl:'PRESENCE DETECTION',pcool_lbl:'GREETING COOLDOWN',theme_lbl:'THEME',fx_lbl:'BACKGROUND FX',fxint_lbl:'FX INTENSITY',fxspd_lbl:'FX SPEED',
@@ -310,13 +311,17 @@ pill('pill-voice',d.voice_alive?'on':'off','VOICE'+(d.voice_hb_age>=0&&d.voice_h
 const ms=d.motor_status||'unknown';
 pill('pill-motor',ms==='daemon'?'on':(ms==='legacy'?'warn':'off'),'MOTOR',T('motor_'+(ms==='daemon'?'daemon':ms==='legacy'?'legacy':ms==='error'?'error':'unknown')));
 pill('pill-presence',d.presence==='PRESENT'?'on':'off',d.presence==='PRESENT'?T('here'):T('absent'));
-if(d.mic_level>=0&&d.mic_threshold>0){const span=d.mic_threshold*2;const pct=Math.min(100,d.mic_level/span*100);
-$('micfill').style.width=pct+'%';$('micfill').className='micfill'+(d.mic_level>=d.mic_threshold?' hot':'');
-$('mictick').style.left=Math.min(98,d.mic_threshold/span*100)+'%';
-$('micbar').title='micro RMS '+d.mic_level+' / seuil effectif '+d.mic_threshold;}
-else{$('micfill').style.width='0%';$('micbar').title='micro : pas de signal (Voice off ?)';}
 $('st-status').textContent='live';$('st-status').style.color='#7ce38b';}
 catch(e){$('st-status').textContent='offline';$('st-status').style.color='var(--red)';}}
+let _micShown=0;
+async function pollMic(){try{const r=await fetch('/api/miclevel');const d=await r.json();
+if(d.level>=0&&d.threshold>0){const span=d.threshold*2;
+_micShown=Math.max(d.level,_micShown*0.75);
+const pct=Math.min(100,_micShown/span*100);
+$('micfill').style.width=pct+'%';$('micfill').className='micfill'+(_micShown>=d.threshold?' hot':'');
+$('mictick').style.left=Math.min(98,d.threshold/span*100)+'%';
+$('micbar').title='micro RMS '+d.level+' / seuil effectif '+d.threshold;}
+else{$('micfill').style.width='0%';$('micbar').title='micro : pas de signal (Voice off ?)';}}catch(e){}}
 
 /* ===== Commandes ===== */
 window.sendCmd=async function(){const pfx=$('cmd-prefix').value;const inp=$('cmd-input');let cmd=inp.value.trim();
@@ -338,7 +343,12 @@ function fillThemeSelect(){const sel=$('set-theme');sel.innerHTML='';Object.keys
 async function fillMicSelect(current){try{const r=await fetch('/api/devices');const d=await r.json();
 const sel=$('set-micname');sel.innerHTML='';
 d.inputs.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
-if(current){if(![...sel.options].some(o=>o.value===current)){const o=document.createElement('option');o.value=current;o.textContent=current+' (absent)';sel.appendChild(o);}sel.value=current;}}catch(e){}}
+if(current){const cl=current.toLowerCase();
+// match en SOUS-CHAINE (comme _resolve_input_device) : mic_name peut etre un
+// prefixe du nom tronque Windows — egalite stricte affichait "(absent)" a tort
+const hit=[...sel.options].find(o=>o.value.toLowerCase().includes(cl)||cl.includes(o.value.toLowerCase()));
+if(hit){sel.value=hit.value;}
+else{const o=document.createElement('option');o.value=current;o.textContent=current+' (absent)';sel.appendChild(o);sel.value=current;}}}catch(e){}}
 function setUI(s){
 $('set-vol').value=Math.round((s.sfx_volume??0.3)*100);
 $('set-mic').value=s.mic_threshold||500;
@@ -389,6 +399,6 @@ await fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/
 $('new-profile-name').value='';await loadProfiles();$('set-profile').value=name;};
 
 fillThemeSelect();loadSettings();loadProfiles();
-setInterval(pollConv,800);setInterval(pollLogs,1000);setInterval(pollStats,2000);
-pollConv();pollLogs();pollStats();
+setInterval(pollConv,800);setInterval(pollLogs,1000);setInterval(pollStats,2000);setInterval(pollMic,400);
+pollConv();pollLogs();pollStats();pollMic();
 </script></body></html>
