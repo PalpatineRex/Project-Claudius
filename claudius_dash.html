@@ -176,7 +176,8 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
 <button class="btn btn-icon" onclick="saveProfile()">SAVE</button>
 <button class="btn btn-icon" onclick="loadProfile()">LOAD</button>
 <button class="btn btn-icon" onclick="deleteProfile()" style="color:var(--red)">DEL</button></div>
-<div class="row"><input type="text" id="new-profile-name" data-i18n-ph="prof_ph" placeholder="Nom du nouveau profil..."><button class="btn btn-icon" onclick="createProfile()">NEW</button></div>
+<div class="row"><input type="text" id="new-profile-name" data-i18n-ph="prof_ph" placeholder="Nom du nouveau profil..."><button class="btn btn-icon" onclick="createProfile()">NEW</button>
+<button class="btn btn-icon" onclick="loadDefaults()" title="recharger les reglages d'usine (puis SAUVEGARDER pour appliquer)">DEFAULT</button></div>
 
 <h3 data-i18n="sec_system">&#x25B8; SYSTEME</h3>
 <div class="row"><label class="lbl" data-i18n="pres_lbl">PRESENCE DETECTION</label>
@@ -239,6 +240,9 @@ const THEME_FX_INT = { midnight:0.5, terminal:0.8, organs:0.65, 'ambulance 🚑'
 
 let cLen=0,lHash='',_lang='fr',_curTheme='dark';
 const $=id=>document.getElementById(id);
+// Toute exception JS devient VISIBLE (fini les pannes silencieuses de polls)
+window.onerror=function(msg,src,line){const s=$('st-status');if(s){s.textContent='JS ERR L'+line+': '+String(msg).slice(0,60);s.style.color='var(--red)';}return false;};
+window.addEventListener('unhandledrejection',e=>{const s=$('st-status');if(s){s.textContent='JS REJ: '+String(e.reason).slice(0,60);s.style.color='var(--red)';}});
 
 /* ===== i18n ===== */
 const _i18n = I18N;
@@ -300,7 +304,7 @@ if($('log-auto').checked)el.scrollTop=el.scrollHeight;}}catch(e){}}
 function pill(id,state,txt,title){const p=$(id);p.className='pill '+state;if(txt)p.textContent=txt;if(title!==undefined)p.title=title;}
 async function pollStats(){try{const r=await fetch('/api/stats');const d=await r.json();
 $('st-uptime').textContent=fmtUp(d.uptime);
-$('st-exchanges').textContent=d.exchanges;$('st-memories').textContent=d.memories;
+$('st-exchanges').textContent=d.exchanges;
 pill('pill-bridge',d.bridge_alive?'on':'off','BRIDGE');
 pill('pill-voice',d.voice_alive?'on':'off','VOICE'+(d.voice_hb_age>=0&&d.voice_hb_age<120?'':' ?'));
 const ms=d.motor_status||'unknown';
@@ -419,6 +423,8 @@ const r=await fetch('/api/profiles');const p=await r.json();if(p[name])setUI(p[n
 window.deleteProfile=async function(){const name=$('set-profile').value;if(name==='_default')return;
 if(!confirm('DEL '+name+' ?'))return;
 await fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,delete:true})});await loadProfiles();};
+window.loadDefaults=async function(){if(!confirm('Recharger les reglages d\'usine ? (SAUVEGARDER ensuite pour appliquer)'))return;
+try{const r=await fetch('/api/settings/defaults');setUI(await r.json());}catch(e){}};
 window.createProfile=async function(){const name=$('new-profile-name').value.trim();if(!name)return;
 await fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,settings:collect()})});
 $('new-profile-name').value='';await loadProfiles();$('set-profile').value=name;};

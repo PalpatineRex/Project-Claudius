@@ -299,6 +299,11 @@ def api_logs_clear():
     try: open(LOG_FILE, "w").close(); return jsonify({"ok": True})
     except Exception: return jsonify({"ok": False})
 
+@app.route("/api/settings/defaults")
+def api_settings_defaults():
+    """Reglages d'usine (pour le bouton DEFAULT — charge l'UI, ne sauve pas)."""
+    return jsonify(dict(_DEFAULT_SETTINGS))
+
 @app.route("/api/settings")
 def api_settings_get():
     try:
