@@ -164,6 +164,75 @@ def api_miclevel():
     except Exception: pass
     return jsonify({"level": level, "threshold": threshold})
 
+_sys_cache = {"t": 0.0, "pids": {}, "procs": {}, "vram": -1, "tick": 0}
+
+@app.route("/api/sysload")
+def api_sysload():
+    """Impact systeme de Claudius : CPU/RAM/VRAM cumules des process
+    (bridge, voice, dash, fenetre, motor). VRAM via nvidia-smi 1 tick/3."""
+    try:
+        import psutil
+    except ImportError:
+        return jsonify({"ok": False})
+    c = _sys_cache
+    now = time.time()
+    if now - c["t"] > 10:  # re-scanner la liste des process toutes les 10 s
+        c["t"] = now
+        found = {}
+        for p in psutil.process_iter(["name", "cmdline"]):
+            try:
+                n = (p.info["name"] or "").lower()
+                cmd = " ".join(p.info["cmdline"] or [])
+                if n == "kinectmotor.exe":
+                    found[p.pid] = "motor"
+                elif n == "claudiusdashboard.exe":
+                    found[p.pid] = "fenetre"
+                elif "python" in n and "Kinect" in cmd:
+                    found[p.pid] = ("bridge" if "KinectBridge" in cmd
+                                    else "voice" if "KinectVoice" in cmd else "dash")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        c["pids"] = found
+        for pid in found:
+            if pid not in c["procs"]:
+                try: c["procs"][pid] = psutil.Process(pid)
+                except psutil.NoSuchProcess: pass
+        for pid in list(c["procs"]):
+            if pid not in found:
+                c["procs"].pop(pid, None)
+    cpu_total, ram_total, detail = 0.0, 0, {}
+    for pid, pr in list(c["procs"].items()):
+        try:
+            cp = pr.cpu_percent(interval=None)  # % d'un coeur depuis le dernier appel
+            rm = pr.memory_info().rss
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            c["procs"].pop(pid, None); continue
+        cpu_total += cp; ram_total += rm
+        lbl = c["pids"].get(pid, "?")
+        d = detail.setdefault(lbl, [0.0, 0])
+        d[0] += cp; d[1] += rm
+    cpu_machine = cpu_total / max(1, psutil.cpu_count() or 1)
+    c["tick"] += 1
+    if c["tick"] % 3 == 1:
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=4,
+                creationflags=subprocess.CREATE_NO_WINDOW).stdout
+            v = 0
+            for line in out.strip().splitlines():
+                parts = line.split(",")
+                if len(parts) >= 2 and parts[0].strip().isdigit() and int(parts[0].strip()) in c["pids"]:
+                    v += int(float(parts[1].strip()))
+            c["vram"] = v
+        except Exception:
+            c["vram"] = -1
+    return jsonify({"ok": True, "cpu": round(cpu_machine, 1),
+                    "ram_mb": ram_total // 1048576, "vram_mb": c["vram"],
+                    "detail": {k: {"cpu": round(v[0], 1), "ram_mb": v[1] // 1048576}
+                               for k, v in sorted(detail.items())}})
+
 @app.route("/api/devices")
 def api_devices():
     """Micros disponibles (hostapi 0 = MME), dedupliques — pour le selecteur

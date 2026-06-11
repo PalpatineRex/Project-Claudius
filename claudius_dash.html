@@ -108,6 +108,7 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
   </div>
   <div class="tstats">
     <span class="micbar" id="micbar" title="niveau micro / seuil effectif">&#8203;<span class="micfill" id="micfill"></span><span class="mictick" id="mictick"></span></span>
+    <span id="sysload" title="impact systeme de Claudius">&#x26A1; --</span>
     <span data-i18n-skip>UPTIME <b id="st-uptime">--</b></span>
     <span><span data-i18n="exchanges">ECHANGES</span> <b id="st-exchanges">0</b></span>
     <span><span data-i18n="memories">SOUVENIRS</span> <b id="st-memories">0</b></span>
@@ -316,6 +317,10 @@ $('micfill').style.width=pct+'%';$('micfill').className='micfill'+(_micShown>=d.
 $('mictick').style.left=Math.min(98,d.threshold/span*100)+'%';
 $('micbar').title='micro RMS '+d.level+' / seuil effectif '+d.threshold;}
 else{$('micfill').style.width='0%';$('micbar').title='micro : pas de signal (Voice off ?)';}}catch(e){}}
+async function pollSys(){try{const r=await fetch('/api/sysload');const d=await r.json();if(!d.ok)return;
+const gb=m=>m>=1024?(m/1024).toFixed(1)+'G':m+'M';
+$('sysload').textContent='⚡ '+d.cpu+'% · '+gb(d.ram_mb)+(d.vram_mb>=0?' · \u{1F3AE} '+gb(d.vram_mb):'');
+$('sysload').title='Impact Claudius — CPU machine '+d.cpu+'% | RAM '+gb(d.ram_mb)+(d.vram_mb>=0?' | VRAM '+gb(d.vram_mb):'')+'\n'+Object.entries(d.detail).map(([k,v])=>k+' : '+v.cpu+'% cpu, '+gb(v.ram_mb)).join('\n');}catch(e){}}
 
 /* ===== Commandes ===== */
 window.sendCmd=async function(){const pfx=$('cmd-prefix').value;const inp=$('cmd-input');let cmd=inp.value.trim();
@@ -417,6 +422,6 @@ await fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/
 $('new-profile-name').value='';await loadProfiles();$('set-profile').value=name;};
 
 fillThemeSelect();fillLangSelect();loadSettings();loadProfiles();
-setInterval(pollConv,800);setInterval(pollLogs,1000);setInterval(pollStats,2000);setInterval(pollMic,400);
-pollConv();pollLogs();pollStats();pollMic();
+setInterval(pollConv,800);setInterval(pollLogs,1000);setInterval(pollStats,2000);setInterval(pollMic,400);setInterval(pollSys,3000);
+pollConv();pollLogs();pollStats();pollMic();pollSys();
 </script></body></html>
