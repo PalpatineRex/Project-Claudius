@@ -79,7 +79,7 @@ Le dashboard offre une vue temps réel sur Claudius :
   - Système : présence, cooldown, thème (10 thèmes), langue (FR/EN)
 
 ### Thèmes disponibles
-Dark, Light, Midnight, Matrix, Ember, Cyberpunk, Ocean, Nord, Solar, Synthwave
+16 thèmes partagés avec le dashboard Odysseus (dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute) + effets de fond animés (rain, embers, synapse, constellations, petals, sparkles, perlin-flow) avec intensité/vitesse.
 
 ---
 

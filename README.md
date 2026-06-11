@@ -23,7 +23,7 @@ In the folder, use the **`.lnk` shortcuts** (with the nice icons) or the **`.bat
 
 ### Option 2: Dashboard exe
 
-Double-click **`ClaudiusDashboard.exe`** — a standalone window opens directly (no browser). If the dashboard is already running, it just opens a new window without duplicating the server. Window size and position are remembered.
+Double-click **`ClaudiusDashboard.exe`** — a native **frameless** window opens (no browser, no title bar: drag the top bar, window buttons built in). If the dashboard is already running, it just opens a new window without duplicating the server. Window size and position are remembered.
 
 ### What each script does
 
@@ -38,7 +38,7 @@ Double-click **`ClaudiusDashboard.exe`** — a standalone window opens directly 
 
 | Feature | Description |
 |----------|-------------|
-| 🎤 **Speech recognition** | You speak, Claudius understands (USB mic recommended) |
+| 🎤 **Speech recognition** | You speak, Claudius understands — mic picked **by name** (USB index drift proof) |
 | 🧠 **Intelligence** | Universal LLM — DeepSeek, Anthropic, OpenRouter, OpenAI |
 | 🗣️ **Blended voice** | A unique voice (Jessica + SIWIS merged), ~1s to reply |
 | 😃 **Gestures** | Yes, no, hello, thinking — the Kinect head moves |
@@ -79,7 +79,7 @@ The dashboard gives a real-time view of Claudius:
   - System: presence, cooldown, theme (10 themes), language (FR/EN)
 
 ### Available themes
-Dark, Light, Midnight, Matrix, Ember, Cyberpunk, Ocean, Nord, Solar, Synthwave
+16 themes shared with the Odysseus dashboard (dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute) + animated background effects (rain, embers, synapse, constellations, petals, sparkles, perlin-flow) with intensity/speed controls.
 
 ---
 
@@ -93,6 +93,9 @@ claudius/
 ├── start_dashboard.bat        ⬅ Dashboard only
 ├── ClaudiusDashboard.exe      ⬅ Standalone dashboard (native window)
 │
+├── claudius_dash.html         🎨 Dashboard UI (runtime-loaded, edit without rebuild)
+├── dashboard-fx.js            ✨ Background effects engine (shared with Odysseus dashboard)
+│
 ├── KinectBridge.py            🧠 Brain: LLM, voice, motor, utilities
 ├── KinectDashboard.py         🖥️ Web UI (localhost:5005)
 ├── KinectVoice.py             🎤 Speech recognition (faster-whisper)
@@ -102,7 +105,7 @@ claudius/
 ├── claudius_sfx.py            🔊 Sound effects (numpy, in RAM)
 ├── claudius_utils.py          ⏱️ Utility commands (time, weather, timers)
 ├── claudius_blend.py          🎭 Voice blending (Jessica + SIWIS)
-├── claudius_context.txt       📋 Claudius personality context
+├── claudius_context.txt       📋 Claudius personality (with anti-hallucination rules)
 │
 ├── claudius_settings.json     ⚙️ Live config (read by Bridge on every call)
 ├── claudius_profiles.json     👤 Saved profiles
@@ -129,7 +132,8 @@ claudius/
 
 - **Latency**: ~2.5 to 3.5 seconds (end of speech → start of reply)
 - **API cost**: ~€0.70/month with DeepSeek V4 Flash
-- **Pipeline**: Bird UM1 → faster-whisper → wake word → Bridge → LLM → Piper TTS blend → sounddevice → KinectMotor
+- **Pipeline**: Bird UM1 → faster-whisper → wake word → Bridge → LLM (+ optional Brain context injection) → Piper TTS blend → sounddevice → KinectMotor
+- **Honest motor status**: the dashboard MOTOR pill shows daemon / degraded / DOWN (no more fake "OK")
 
 ---
 

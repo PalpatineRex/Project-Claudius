@@ -52,3 +52,10 @@ ClaudiusDashboard.exe
 # Profils locaux
 claudius_profiles.json
 claudius_settings.json
+
+# Runtime statut moteur + build
+motor_status.txt
+claudius.ico
+dist_new/
+*.spec
+ClaudiusDashboard.old.exe

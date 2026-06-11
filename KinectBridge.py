@@ -41,6 +41,7 @@ VOICE_PID_FILE = os.path.join(_DATA_DIR, "voice.pid")
 VOICE_HEARTBEAT = os.path.join(_DATA_DIR, "voice_heartbeat.txt")
 VOICE_SCRIPT = os.path.join(_KINECT_DIR, "KinectVoice.py")
 BRIDGE_PID_FILE = os.path.join(_DATA_DIR, "bridge.pid")
+MOTOR_STATUS_FILE = os.path.join(_DATA_DIR, "motor_status.txt")
 MAX_MEMORIES = 15
 LOG_MAX_LINES = 2000
 
@@ -113,6 +114,19 @@ def _cleanup_boot():
     os.system("taskkill /f /im KinectMotor.exe >nul 2>nul")
     time.sleep(1)
 
+def _rotate_log():
+    """Tronque kinect.log aux LOG_MAX_LINES dernieres lignes (il atteignait
+    6 Mo / 174k lignes : LOG_MAX_LINES existait mais n'etait jamais utilise)."""
+    try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 1_000_000:
+            with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            if len(lines) > LOG_MAX_LINES:
+                with open(LOG_FILE, "w", encoding="utf-8") as f:
+                    f.writelines(lines[-LOG_MAX_LINES:])
+    except Exception:
+        pass
+
 # ====================================================================
 # ÉTAT GLOBAL
 # ====================================================================
@@ -170,13 +184,22 @@ def _tts_wait(text):
         if _piper_voice is not None:
             audio_data = None
             sample_rate = _piper_voice.config.sample_rate
+            # tts_speed (dashboard) -> length_scale Piper (1.0 = normal)
+            syn_cfg = None
+            try:
+                speed = float(_load_settings().get("tts_speed", 1.0))
+                if abs(speed - 1.0) > 0.01:
+                    from piper import SynthesisConfig
+                    syn_cfg = SynthesisConfig(length_scale=1.0 / max(0.5, min(speed, 2.0)))
+            except Exception:
+                syn_cfg = None
             with _piper_lock:
                 try:
                     t = time.time()
                     if _piper_voice2 is not None:
-                        audio_data = synth_both(_piper_voice, _piper_voice2, text)
+                        audio_data = synth_both(_piper_voice, _piper_voice2, text, syn_cfg)
                     else:
-                        frames = [c.audio_int16_array for c in _piper_voice.synthesize(text)]
+                        frames = [c.audio_int16_array for c in _piper_voice.synthesize(text, syn_cfg)]
                         if frames:
                             audio_data = np.concatenate(frames).astype(np.float32)
                     dt = time.time() - t
@@ -219,6 +242,16 @@ def _on_timer_alarm(message):
 # ====================================================================
 # MOTEUR KINECT
 # ====================================================================
+_motor_err_last_log = [0.0]
+
+def _set_motor_status(status):
+    """Statut moteur HONNETE pour le dashboard : daemon | legacy | error."""
+    try:
+        with open(MOTOR_STATUS_FILE, "w") as f:
+            f.write(status)
+    except Exception:
+        pass
+
 def _run(cmd):
     with _motor_lock:
         if _motor_daemon_mode:
@@ -229,9 +262,22 @@ def _run(cmd):
             except Exception as e:
                 log(f"ERR cmd write: {e}", LOG_FILE, "MOTOR")
         else:
+            # Mode legacy (daemon mort/Kinect absent) : on verifie VRAIMENT le
+            # resultat — l'ancien code loggait "OK" sans regarder (tete immobile
+            # avec un dash tout vert, vecu 2026-06-11). Anti-flood : 1 ERR/min.
             try:
-                subprocess.call([MOTOR_EXE, cmd], creationflags=subprocess.CREATE_NO_WINDOW)
-                log(f"OK: {cmd}", LOG_FILE, "MOTOR")
+                r = subprocess.run([MOTOR_EXE, cmd], creationflags=subprocess.CREATE_NO_WINDOW,
+                                   capture_output=True, text=True, timeout=30)
+                out = (r.stdout or "").strip()
+                if r.returncode != 0 or out.startswith("ERROR:"):
+                    _set_motor_status("error")
+                    now = time.time()
+                    if now - _motor_err_last_log[0] >= 60:
+                        _motor_err_last_log[0] = now
+                        log(f"ERR {cmd}: rc={r.returncode} {out[:60] or '(pas de Kinect ?)'}", LOG_FILE, "MOTOR")
+                else:
+                    _set_motor_status("legacy")
+                    log(f"OK: {cmd} (legacy)", LOG_FILE, "MOTOR")
             except Exception as e:
                 log(f"ERR _run {cmd}: {e}", LOG_FILE, "MOTOR")
 
@@ -284,10 +330,12 @@ def _launch_motor_daemon():
         if proc.poll() is None:
             _motor_daemon_mode = True
             _motor_daemon_proc = proc
+            _set_motor_status("daemon")
             log(f"MOTOR: daemon lance (PID {proc.pid})", LOG_FILE)
             return True
     except Exception as e:
         log(f"ERR motor daemon: {e}", LOG_FILE)
+    _set_motor_status("legacy")
     return False
 
 # ====================================================================
@@ -335,7 +383,12 @@ def _load_memories():
 
 def _save_memory(summary, exchange_count):
     try:
-        memories = _load_memories() if os.path.exists(MEMORY_FILE) else []
+        # Charger le fichier COMPLET (pas _load_memories qui cape a 15 :
+        # l'ancien code ecrasait tout au-dela de 16 souvenirs)
+        memories = []
+        if os.path.exists(MEMORY_FILE):
+            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+                memories = json.load(f)
         entry = {"date": time.strftime("%Y-%m-%d %H:%M"), "summary": summary, "exchanges": exchange_count}
         memories.append(entry)
         if len(memories) > 50:
@@ -382,11 +435,14 @@ def _summarize_session(history):
 def _format_memories_for_prompt():
     memories = _load_memories()
     if not memories:
-        return ""
-    lines = ["\nSOUVENIRS DES SESSIONS PRECEDENTES:"]
+        return ("\nSOUVENIRS DES SESSIONS PRECEDENTES: aucun. "
+                "Si David evoque un souvenir, dis honnetement que tu ne t'en souviens pas.")
+    lines = ["\nSOUVENIRS DES SESSIONS PRECEDENTES (resumes automatiques — ce sont tes SEULS souvenirs):"]
     for m in memories:
         lines.append(f"- [{m['date']}] {m['summary']}")
-    lines.append("Utilise ces souvenirs naturellement si pertinent.")
+    lines.append("REGLE ABSOLUE: si David demande un souvenir qui n'est PAS dans cette liste "
+                 "(ni dans le bloc CERVEAU s'il est present), reponds que tu ne t'en souviens pas. "
+                 "N'invente JAMAIS un souvenir, un projet, un metier ou un fait sur David.")
     return "\n".join(lines)
 
 # ====================================================================
@@ -438,6 +494,7 @@ def _load_settings():
 # (vide ou absent = désactivé). Le Brain = un dossier de fiches .md avec
 # INDEX.md à la racine et projects/<nom>/STATE.md par projet.
 _BRAIN_ALIASES = {
+    "claudius": ("claudius", "kinect", "ton projet", "ton code", "ta tete", "ta tête"),
     "eldritch_front": ("eldritch",),
     "odysseus": ("odysseus", "dashboard"),
     "aether": ("aether",),
@@ -445,7 +502,8 @@ _BRAIN_ALIASES = {
     "hardware_pads": ("capcom", "nes advantage", "pad bluetooth", "manette bluetooth"),
 }
 _BRAIN_GENERIC = ("cerveau", "brain", "mes projets", "les projets",
-                  "ou j'en suis", "où j'en suis", "quoi de neuf")
+                  "ou j'en suis", "où j'en suis", "quoi de neuf",
+                  "tu te souviens", "te souviens-tu", "la derniere fois", "la dernière fois")
 
 def _brain_read_capped(path, cap=4000):
     try:
@@ -949,7 +1007,11 @@ def _presence_watcher():
 
         if present and not was_present:
             absence_dur = now - absence_start if absence_start else 9999
-            if (now - last_greeting >= _PRESENCE_COOLDOWN) and (absence_dur >= _PRESENCE_MIN_ABSENCE):
+            try:
+                cooldown = max(60, int(_load_settings().get("presence_cooldown", _PRESENCE_COOLDOWN)))
+            except Exception:
+                cooldown = _PRESENCE_COOLDOWN
+            if (now - last_greeting >= cooldown) and (absence_dur >= _PRESENCE_MIN_ABSENCE):
                 last_greeting = now
                 memory_saved = False
 
@@ -979,14 +1041,28 @@ def _presence_watcher():
 # ====================================================================
 # WATCHDOG MOTOR
 # ====================================================================
+_MOTOR_RETRY_INTERVAL = 300
+
 def _watchdog_motor():
     global _motor_daemon_mode, _motor_daemon_proc
     time.sleep(10)
     log("WATCHDOG MOTOR: actif", LOG_FILE)
     restart_count = 0
+    last_retry = 0.0
     while True:
         time.sleep(15)
-        if not _motor_daemon_mode or _motor_daemon_proc is None:
+        if not _motor_daemon_mode:
+            # Daemon jamais demarre (Kinect absent au boot ?) — retenter
+            # periodiquement : si le Kinect revient (alim rebranchee), le
+            # daemon repart SEUL, sans restart du Bridge.
+            now = time.time()
+            if now - last_retry >= _MOTOR_RETRY_INTERVAL:
+                last_retry = now
+                log("WATCHDOG MOTOR: retente le daemon (mode legacy)", LOG_FILE)
+                if _launch_motor_daemon():
+                    restart_count = 0
+            continue
+        if _motor_daemon_proc is None:
             continue
         if _motor_daemon_proc.poll() is not None:
             log(f"MOTOR: daemon mort (code {_motor_daemon_proc.returncode})", LOG_FILE)
@@ -1016,6 +1092,7 @@ def _setup_cuda():
 if __name__ == "__main__":
     _enforce_singleton()
     _cleanup_boot()
+    _rotate_log()
     _setup_cuda()
 
     if not DEEPSEEK_API_KEY:

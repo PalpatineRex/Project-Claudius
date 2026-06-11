@@ -176,14 +176,15 @@ def blend(j_audio, s_audio, ratio=0.5):
         out *= 31000.0 / peak
     return out.astype(np.float32)
 
-def synth_both(piper_voice, piper_voice2, text):
-    """Synthèse séquentielle Jessica + SIWIS + blend (CUDA safe)."""
+def synth_both(piper_voice, piper_voice2, text, syn_config=None):
+    """Synthèse séquentielle Jessica + SIWIS + blend (CUDA safe).
+    syn_config: piper SynthesisConfig optionnel (length_scale = vitesse TTS)."""
     try:
-        j_audio = np.concatenate([c.audio_int16_array for c in piper_voice.synthesize(text)])
+        j_audio = np.concatenate([c.audio_int16_array for c in piper_voice.synthesize(text, syn_config)])
     except Exception:
         return None
     try:
-        s_audio = np.concatenate([c.audio_int16_array for c in piper_voice2.synthesize(text)])
+        s_audio = np.concatenate([c.audio_int16_array for c in piper_voice2.synthesize(text, syn_config)])
     except Exception:
         return j_audio.astype(np.float32)
     return blend(j_audio, s_audio, 0.5)

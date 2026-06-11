@@ -10,7 +10,10 @@ import time, os, re, threading, queue, sys
 
 # --- Detection audio systeme (mute quand video/musique joue) ---
 _system_audio_active = False
-_AUDIO_IGNORE = {"pythonw.exe", "python.exe", "opera.exe"}  # nos process + navigateur (onglets media idle)
+# nos process + navigateurs (onglets media idle) + Wallpaper Engine (session
+# active par a-coups en continu : flood mute/unmute vu en reel 2026-06-11)
+_AUDIO_IGNORE = {"pythonw.exe", "python.exe", "opera.exe", "comet.exe",
+                 "wallpaper64.exe", "wallpaper32.exe"}
 
 def _audio_monitor():
     """Thread qui check toutes les 0.5s si du son systeme joue."""
@@ -20,19 +23,27 @@ def _audio_monitor():
     except ImportError:
         _log("pycaw absent — pas de detection audio systeme")
         return
+    ignore = set(_AUDIO_IGNORE)
+    try:
+        extra = _load_settings().get("audio_ignore", [])
+        ignore |= {str(x).lower() for x in extra}
+    except Exception:
+        pass
     while True:
         try:
             sessions = AudioUtilities.GetAllSessions()
             active = False
+            culprit = ""
             for s in sessions:
                 if s.State == 1:  # AudioSessionState.Active
                     name = s.Process.name() if s.Process else "system"
-                    if name.lower() not in _AUDIO_IGNORE:
+                    if name.lower() not in ignore:
                         active = True
+                        culprit = name
                         break
             if active != _system_audio_active:
                 _system_audio_active = active
-                _log(f"Audio systeme: {'ACTIF — mute voice' if active else 'inactif — ecoute'}")
+                _log(f"Audio systeme: {f'ACTIF ({culprit}) — mute voice' if active else 'inactif — ecoute'}")
         except Exception:
             pass
         time.sleep(0.5)
@@ -44,8 +55,6 @@ CHUNK_SAMPLES   = int(SAMPLE_RATE * CHUNK_DURATION)
 SILENCE_AFTER   = 0.8
 MIN_DURATION    = 0.5
 MAX_DURATION    = 8.0
-FIXED_THRESHOLD = 500
-MODEL_SIZE      = "small"
 
 # Chemins portables : relatifs au script, overridables par env
 BASE_DIR        = os.environ.get("CLAUDIUS_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
@@ -56,8 +65,55 @@ TTS_LOCK_FILE   = os.path.join(BASE_DIR, "tts_speaking.lock")
 SLEEP_FILE      = os.path.join(BASE_DIR, "claudius_sleep.lock")
 HEARTBEAT_FILE  = os.path.join(BASE_DIR, "voice_heartbeat.txt")
 PID_FILE        = os.path.join(BASE_DIR, "voice.pid")
-# Micro : index du device (overridable par env, -1 = default systeme)
-BIRD_DEVICE_ID  = int(os.environ.get("CLAUDIUS_MIC_DEVICE", "1"))
+SETTINGS_FILE   = os.path.join(BASE_DIR, "claudius_settings.json")
+
+def _load_settings():
+    try:
+        import json
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_settings       = _load_settings()
+# Reglages pilotes par le dashboard (claudius_settings.json), env = override
+FIXED_THRESHOLD = int(os.environ.get("CLAUDIUS_MIC_THRESHOLD",
+                                     _settings.get("mic_threshold", 500)))
+MODEL_SIZE      = os.environ.get("CLAUDIUS_WHISPER_MODEL",
+                                 _settings.get("whisper_model", "small"))
+WAKE_WORD       = os.environ.get("CLAUDIUS_WAKE_WORD",
+                                 _settings.get("wake_word", "claudius")).strip().lower()
+# Micro : choisi PAR NOM (les index glissent quand un peripherique USB
+# apparait — vu en reel 2026-06-11 : une manette Nacon a pris l'index 1 du
+# Bird UM1 et Claudius ecoutait un micro de casque silencieux).
+MIC_NAME        = os.environ.get("CLAUDIUS_MIC_NAME",
+                                 _settings.get("mic_name", "BIRD UM1"))
+MIC_INDEX_ENV   = os.environ.get("CLAUDIUS_MIC_DEVICE", "")  # index force (debug)
+
+def _resolve_input_device():
+    """Retourne (device_id, label). Cherche MIC_NAME dans les devices d'entree
+    (hostapi 0 = MME en priorite), sinon index force, sinon defaut systeme."""
+    if MIC_INDEX_ENV.strip().lstrip("-").isdigit():
+        idx = int(MIC_INDEX_ENV)
+        if idx >= 0:
+            try:
+                return idx, sd.query_devices(idx)["name"] + " (index force)"
+            except Exception:
+                pass
+    needle = MIC_NAME.lower()
+    candidates = []
+    try:
+        for i, d in enumerate(sd.query_devices()):
+            if d.get("max_input_channels", 0) > 0 and needle in d["name"].lower():
+                candidates.append((d.get("hostapi", 99), i, d["name"]))
+    except Exception as e:
+        _log(f"ERR scan devices: {e}")
+    if candidates:
+        candidates.sort()
+        _, idx, name = candidates[0]
+        return idx, name
+    _log(f"WARN: micro '{MIC_NAME}' introuvable — fallback device par defaut systeme")
+    return None, "defaut systeme"
 
 # --- Singleton : tue les instances precedentes ---
 def _enforce_singleton():
@@ -168,13 +224,17 @@ def transcribe(frames, model):
         avg_lp = -999.0
     return text, avg_lp
 
-# --- Filtre mot-cle "Claudius" ---
-# Match fuzzy : cherche "claudius" ou variantes n'importe ou dans la phrase
-_WAKE_EXACT = {"claudius", "clodius", "clodious", "klodius", "cloudius", "clodeus",
-               "cladius", "clodias", "clodis", "klaudius", "lodius", "laudice",
-               "clodice", "clodisse", "claude", "clodice", "laudis", "lodice"}
-# Noyaux phonetiques — si un mot les contient, c'est probablement "Claudius"
-_WAKE_CORES = ("claud", "clod", "klod", "klaud", "laudic", "lodic", "lodiu", "audiu", "audic", "audi")
+# --- Filtre mot-cle wake (configurable, defaut "Claudius") ---
+# Match fuzzy : cherche le mot-cle ou ses variantes n'importe ou dans la phrase
+if WAKE_WORD == "claudius":
+    _WAKE_EXACT = {"claudius", "clodius", "clodious", "klodius", "cloudius", "clodeus",
+                   "cladius", "clodias", "clodis", "klaudius", "lodius", "laudice",
+                   "clodice", "clodisse", "claude", "clodice", "laudis", "lodice"}
+    # Noyaux phonetiques — si un mot les contient, c'est probablement "Claudius"
+    _WAKE_CORES = ("claud", "clod", "klod", "klaud", "laudic", "lodic", "lodiu", "audiu", "audic", "audi")
+else:
+    _WAKE_EXACT = {WAKE_WORD}
+    _WAKE_CORES = (WAKE_WORD[:5],) if len(WAKE_WORD) >= 5 else (WAKE_WORD,)
 
 def _contains_wake_word(text):
     """Cherche le mot-cle Claudius n'importe ou dans la phrase.
@@ -379,11 +439,8 @@ if __name__ == "__main__":
     from faster_whisper import WhisperModel
     model = WhisperModel(MODEL_SIZE, device=device, compute_type=compute)
     _log(f"Modele pret. [{device.upper()} {compute}]")
-    try:
-        dev_info = sd.query_devices(BIRD_DEVICE_ID)
-        _log(f"Audio: {dev_info['name']} (device {BIRD_DEVICE_ID})")
-    except Exception:
-        _log(f"Audio: device {BIRD_DEVICE_ID} (info indispo)")
+    mic_id, mic_label = _resolve_input_device()
+    _log(f"Audio: {mic_label} (device {mic_id if mic_id is not None else 'auto'}) | seuil={FIXED_THRESHOLD} | wake='{WAKE_WORD}'")
 
     # Thread detection audio systeme (mute quand video/musique)
     # Lance AVANT calibration pour eviter de calibrer pendant que l'audio joue
@@ -397,7 +454,7 @@ if __name__ == "__main__":
     # Thread heartbeat pour le watchdog Bridge
     threading.Thread(target=_heartbeat_loop, daemon=True).start()
 
-    with sd.InputStream(device=BIRD_DEVICE_ID, samplerate=SAMPLE_RATE,
+    with sd.InputStream(device=mic_id, samplerate=SAMPLE_RATE,
                         channels=1, dtype="int16", blocksize=CHUNK_SAMPLES) as stream:
         threshold = calibrate(stream)
         try:

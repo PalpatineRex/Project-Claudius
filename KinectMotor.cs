@@ -55,10 +55,13 @@ class KinectMotor {
     }
 
     // --- Motor gestures ---
+    static bool motorFailed = false;
+
     static void Set(int deg) {
         if (deg < -27) deg = -27;
         if (deg >  27) deg =  27;
-        NuiCameraElevationSetAngle(deg);
+        int hr = NuiCameraElevationSetAngle(deg);
+        if (hr < 0) motorFailed = true;  // HRESULT d'erreur (pas de Kinect, USB mort...)
     }
 
     static void Oui() {
@@ -234,6 +237,7 @@ class KinectMotor {
         DateTime lastTrigger = DateTime.MinValue;
         DateTime lastConfigCheck = DateTime.Now;
         DateTime lastDebugLog = DateTime.Now;
+        DateTime lastMotorErr = DateTime.MinValue;
         int configCheckIntervalS = 30;
         int debugLogIntervalS = 10;  // log pixel count every 10s for diagnostics
 
@@ -253,6 +257,11 @@ class KinectMotor {
                             Console.WriteLine(Snap(snapDir));
                         } else {
                             RunGesture(cmd);
+                            if (motorFailed && (DateTime.Now - lastMotorErr).TotalSeconds > 60) {
+                                Log("ERR motor: commande inclinaison refusee (Kinect debranche ?)");
+                                lastMotorErr = DateTime.Now;
+                            }
+                            motorFailed = false;
                         }
                     }
                 }
@@ -311,6 +320,12 @@ class KinectMotor {
             else RunGesture(mode);
         } finally {
             StopSensor();
+        }
+        // Honnetete : un geste qui a echoue (pas de Kinect) doit le DIRE au
+        // caller — l'ancien code sortait en 0 et le Bridge loggait "OK".
+        if (motorFailed) {
+            Console.WriteLine("ERROR:motor_no_kinect");
+            Environment.Exit(2);
         }
     }
 

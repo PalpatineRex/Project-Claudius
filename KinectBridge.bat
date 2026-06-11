@@ -1,6 +1,5 @@
 @echo off
-start "" /MIN "C:\Python314\pythonw.exe" "C:\Kinect\KinectBridge.py"
-timeout /t 3 /nobreak >nul
-start "" /MIN "C:\Python314\pythonw.exe" "C:\Kinect\KinectVoice.py"
-timeout /t 1 /nobreak >nul
-start "" /MIN "C:\Python314\pythonw.exe" "C:\Kinect\KinectTranscript.py"
+:: Lance le Bridge SEUL (sans dashboard) — chemins relatifs au dossier courant
+:: (l'ancienne version pointait C:\Kinect\, mort depuis le demenagement)
+cd /d "%~dp0"
+start "" /MIN pythonw KinectBridge.py
