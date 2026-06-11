@@ -31,7 +31,7 @@ background:color-mix(in srgb,var(--panel) 80%,transparent);border-bottom:1px sol
 .tstats{margin-left:auto;display:flex;gap:14px;font-size:10px;color:var(--dim);white-space:nowrap;align-items:center;}
 .tstats b{color:var(--fg);font-weight:600;}
 .micbar{display:inline-block;width:90px;height:10px;border:1px solid var(--border);border-radius:5px;position:relative;overflow:hidden;background:color-mix(in srgb,var(--bg) 60%,transparent);}
-.micfill{display:block;height:100%;width:0%;background:var(--dim);transition:width .25s;}
+.micfill{display:block;height:100%;width:0%;background:color-mix(in srgb,var(--fg) 55%,transparent);transition:width .25s;}
 .micfill.hot{background:#7ce38b;}
 .mictick{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--red);left:60%;}
 .win-ctrls{position:absolute;top:6px;right:10px;display:flex;gap:2px;}
@@ -112,7 +112,6 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
     <span id="sysload" title="impact systeme de Claudius">&#x26A1; --</span>
     <span data-i18n-skip>UPTIME <b id="st-uptime">--</b></span>
     <span><span data-i18n="exchanges">ECHANGES</span> <b id="st-exchanges">0</b></span>
-    <span title="souvenirs LOCAUX de Claudius (memory.json) — distincts du Brain central"><span data-i18n="memories">LOCAL</span> <b id="st-memories">0</b></span>
   </div>
   <div class="win-ctrls no-drag">
     <button class="win-btn" onclick="winMin()" title="Reduire">&#x2013;</button>
@@ -306,7 +305,8 @@ pill('pill-bridge',d.bridge_alive?'on':'off','BRIDGE');
 pill('pill-voice',d.voice_alive?'on':'off','VOICE'+(d.voice_hb_age>=0&&d.voice_hb_age<120?'':' ?'));
 const ms=d.motor_status||'unknown';
 pill('pill-motor',ms==='daemon'?'on':(ms==='legacy'?'warn':'off'),'MOTOR',T('motor_'+(ms==='daemon'?'daemon':ms==='legacy'?'legacy':ms==='error'?'error':'unknown')));
-pill('pill-brain',d.brain_on?'on':'off','BRAIN',d.brain_on?'hook Cerveau ACTIF (fiches projets injectees dans le prompt)':'hook Cerveau inactif (brain_path vide — OPTIONS > CERVEAU)');
+pill('pill-brain',d.brain_on?'on':'off','BRAIN'+(d.brain_projects>=0?' '+d.brain_projects:''),
+d.brain_on?('\u{1F9E0} Cerveau ACTIF — '+d.brain_projects+' projets injectables dans le prompt'+(d.brain_age_h>=0?'\nINDEX mis a jour il y a '+(d.brain_age_h<1?Math.round(d.brain_age_h*60)+' min':d.brain_age_h+' h'):'')):'hook Cerveau inactif (brain_path vide — OPTIONS > CERVEAU)');
 pill('pill-presence',d.presence==='PRESENT'?'on':'off',d.presence==='PRESENT'?T('here'):T('absent'));
 $('st-status').textContent='live';$('st-status').style.color='#7ce38b';}
 catch(e){$('st-status').textContent='offline';$('st-status').style.color='var(--red)';}}

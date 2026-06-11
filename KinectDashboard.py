@@ -144,16 +144,20 @@ def api_stats():
             if len(parts) > 1:
                 mic_threshold = int(float(parts[1]))
     except Exception: pass
-    brain_on = False
+    brain_on, brain_projects, brain_age_h = False, -1, -1.0
     try:
         with open(SETTINGS_FILE, "r") as f:
             bp = json.load(f).get("brain_path", "")
         brain_on = bool(bp) and os.path.isdir(bp)
+        if brain_on:
+            brain_projects = sum(1 for e in os.scandir(os.path.join(bp, "projects")) if e.is_dir())
+            brain_age_h = round((time.time() - os.path.getmtime(os.path.join(bp, "INDEX.md"))) / 3600, 1)
     except Exception: pass
     return jsonify({"uptime": uptime, "presence": presence, "memories": mem_count,
                     "exchanges": exchanges, "bridge_alive": bridge_alive,
                     "voice_alive": voice_alive, "voice_hb_age": voice_hb_age,
                     "motor_status": motor_status, "brain_on": brain_on,
+                    "brain_projects": brain_projects, "brain_age_h": brain_age_h,
                     "mic_level": mic_level, "mic_threshold": mic_threshold})
 
 @app.route("/api/miclevel")
