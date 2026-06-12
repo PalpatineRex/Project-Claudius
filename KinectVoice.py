@@ -10,40 +10,78 @@ import time, os, re, threading, queue, sys
 
 # --- Detection audio systeme (mute quand video/musique joue) ---
 _system_audio_active = False
+# Du son SORT reellement des enceintes (peak metering, MEME pour les process
+# ignores comme le navigateur) -> wake STRICT : une video YouTube qui dit
+# « audio » ne reveille plus Claudius, mais « Claudius » exact passe toujours
+# (= on peut couper la musique a la voix). Vu en reel 2026-06-12 : des dizaines
+# d'utterances de video transcrites, calibration faite en pleine video.
+_system_audio_loud = False
+_PEAK_THRESHOLD = 0.02
 # nos process + navigateurs (onglets media idle) + Wallpaper Engine (session
 # active par a-coups en continu : flood mute/unmute vu en reel 2026-06-11)
 _AUDIO_IGNORE = {"pythonw.exe", "python.exe", "opera.exe", "comet.exe",
                  "wallpaper64.exe", "wallpaper32.exe"}
+# Exclus du peak metering : notre TTS + Wallpaper Engine (ambiance SANS voix
+# qui joue quasi en continu — sinon strict permanent, vu en reel 2026-06-12).
+# Les navigateurs restent surveilles : c'est eux qui diffusent les videos.
+_PEAK_IGNORE = {"pythonw.exe", "python.exe", "wallpaper64.exe", "wallpaper32.exe"}
 
 def _audio_monitor():
-    """Thread qui check toutes les 0.5s si du son systeme joue."""
-    global _system_audio_active
+    """Thread 0.5s : etat des sessions audio. Deux niveaux :
+    - _system_audio_active : session ACTIVE d'un process non ignore -> mute total
+    - _system_audio_loud   : du son sort VRAIMENT (peak), tout process sauf les
+      notres -> mode wake strict (exact). Hysteresis 2s contre les blancs."""
+    global _system_audio_active, _system_audio_loud
     try:
         from pycaw.pycaw import AudioUtilities
     except ImportError:
         _log("pycaw absent — pas de detection audio systeme")
         return
+    try:
+        from pycaw.pycaw import IAudioMeterInformation
+    except ImportError:
+        IAudioMeterInformation = None
+        _log("pycaw sans IAudioMeterInformation — pas de peak metering (wake strict off)")
     ignore = set(_AUDIO_IGNORE)
     try:
         extra = _load_settings().get("audio_ignore", [])
         ignore |= {str(x).lower() for x in extra}
     except Exception:
         pass
+    quiet_ticks = 0
     while True:
         try:
             sessions = AudioUtilities.GetAllSessions()
             active = False
             culprit = ""
+            loud_now = False
+            loud_culprit = ""
             for s in sessions:
-                if s.State == 1:  # AudioSessionState.Active
-                    name = s.Process.name() if s.Process else "system"
-                    if name.lower() not in ignore:
-                        active = True
-                        culprit = name
-                        break
+                name = (s.Process.name() if s.Process else "system").lower()
+                if s.State == 1 and name not in ignore:  # AudioSessionState.Active
+                    active = True
+                    culprit = name
+                if IAudioMeterInformation is not None and name not in _PEAK_IGNORE and not loud_now:
+                    try:
+                        peak = s._ctl.QueryInterface(IAudioMeterInformation).GetPeakValue()
+                        if peak > _PEAK_THRESHOLD:
+                            loud_now = True
+                            loud_culprit = name
+                    except Exception:
+                        pass
             if active != _system_audio_active:
                 _system_audio_active = active
                 _log(f"Audio systeme: {f'ACTIF ({culprit}) — mute voice' if active else 'inactif — ecoute'}")
+            if loud_now:
+                quiet_ticks = 0
+                if not _system_audio_loud:
+                    _system_audio_loud = True
+                    _log(f"Son en sortie ({loud_culprit}) — wake STRICT (mot exact requis)")
+            elif _system_audio_loud:
+                quiet_ticks += 1
+                if quiet_ticks >= 4:  # ~2s de silence
+                    _system_audio_loud = False
+                    _log("Silence en sortie — wake normal (fuzzy)")
         except Exception:
             pass
         time.sleep(0.5)
@@ -203,6 +241,12 @@ def is_hallucination(text):
         return True
     return False
 
+# initial_prompt DYNAMIQUE : Whisper ne sait transcrire un nom inventé
+# (« Le Glaude », « Cloclo ») QUE s'il l'a vu dans le prompt — sinon il sort
+# une utterance VIDE (vecu 2026-06-12 : « Le Glaude » seul -> '' logprob -999).
+_INITIAL_PROMPT = (", ".join(t.strip().title() for t in WAKE_WORD.split(",") if t.strip())
+                   or "Claudius") + ". Claudius, bonjour. Quelle heure est-il ?"
+
 def transcribe(frames, model):
     audio = np.concatenate(frames).flatten().astype(np.float32) / 32768.0
     segments, info = model.transcribe(
@@ -213,7 +257,7 @@ def transcribe(frames, model):
         no_speech_threshold=0.4,
         log_prob_threshold=-0.5,
         compression_ratio_threshold=2.4,
-        initial_prompt="Claudius, bonjour. Claudius, comment ça va ?",
+        initial_prompt=_INITIAL_PROMPT,
     )
     seg_list = list(segments)
     text = " ".join(s.text for s in seg_list).strip()
@@ -231,40 +275,62 @@ def transcribe(frames, model):
 _CLAUDIUS_EXACT = {"claudius", "clodius", "clodious", "klodius", "cloudius", "clodeus",
                    "cladius", "clodias", "clodis", "klaudius", "lodius", "laudice",
                    "clodice", "clodisse", "claude", "clodice", "laudis", "lodice"}
-_CLAUDIUS_CORES = ("claud", "clod", "klod", "klaud", "laudic", "lodic", "lodiu", "audiu", "audic", "audi")
+# Noyaux phonetiques : « audi »/« audic »/« audiu » RETIRES (2026-06-12) — ils
+# matchaient « audio », « audience », « Audi »… = wake fantome sur les videos.
+_CLAUDIUS_CORES = ("claud", "clod", "klod", "klaud", "laudic", "lodic", "lodiu")
 
 _WAKE_EXACT = set()
 _WAKE_CORES = ()
+_WAKE_PHRASES = []  # tags MULTI-MOTS (« le glaude ») : le match mot-a-mot ne
+# peut jamais les voir -> regex sous-chaine sur la phrase entiere (bug vecu
+# 2026-06-12 : « Le Glaude » configure au dash et totalement ignore)
 for _tag in [t.strip() for t in WAKE_WORD.split(",") if t.strip()]:
     if _tag == "claudius":
         _WAKE_EXACT |= _CLAUDIUS_EXACT
         _WAKE_CORES += _CLAUDIUS_CORES
+    elif " " in _tag:
+        _WAKE_PHRASES.append(re.compile(
+            r'\b' + r'[\s-]+'.join(re.escape(w) for w in _tag.split()) + r'\b', re.IGNORECASE))
     else:
         _WAKE_EXACT.add(_tag)
         _WAKE_CORES += ((_tag[:5],) if len(_tag) >= 5 else (_tag,))
-if not _WAKE_EXACT:
+if not _WAKE_EXACT and not _WAKE_PHRASES:
     _WAKE_EXACT, _WAKE_CORES = set(_CLAUDIUS_EXACT), _CLAUDIUS_CORES
 
-def _contains_wake_word(text):
+def _contains_wake_word(text, strict=False):
     """Cherche le mot-cle Claudius n'importe ou dans la phrase.
     Retourne (True, texte_nettoyé) ou (False, text_original).
-    Retire le mot-cle et tout ce qui est avant."""
+    Retire le mot-cle et tout ce qui est avant.
+    strict=True (du son sort des enceintes) : mots EXACTS seulement, pas de
+    noyau phonetique — une video ne reveille pas Claudius, David si."""
     t = text.strip()
     if not t:
         return False, t
+    # Tags multi-mots (« le glaude ») : sous-chaine sur la phrase entiere.
+    # Exacts par nature -> valides aussi en mode strict.
+    for ph in _WAKE_PHRASES:
+        m = ph.search(t)
+        if m:
+            rest = t[m.end():].strip(" ,.:!?")
+            if not rest:  # « Quelle heure il est, le Glaude ? » -> garder l'avant
+                rest = t[:m.start()].strip(" ,.:!?")
+            return True, rest
     words = t.split()
     for i, w in enumerate(words):
         wl = w.lower().strip(".,!?;:'\"")
+        # Whisper colle parfois des tirets/points dans le mot (« Clo-clo »)
+        wl = wl.replace("-", "").replace(".", "")
         # Check exact
         if wl in _WAKE_EXACT:
             # Garder tout apres le mot-cle
             rest = " ".join(words[i+1:]).strip(" ,.:!?")
             return True, rest
         # Check noyau phonetique
-        for core in _WAKE_CORES:
-            if core in wl:
-                rest = " ".join(words[i+1:]).strip(" ,.:!?")
-                return True, rest
+        if not strict:
+            for core in _WAKE_CORES:
+                if core in wl:
+                    rest = " ".join(words[i+1:]).strip(" ,.:!?")
+                    return True, rest
         # Check apostrophe split (ex: "l'audice")
         if "'" in wl:
             parts = wl.split("'")
@@ -272,40 +338,64 @@ def _contains_wake_word(text):
                 if p in _WAKE_EXACT:
                     rest = " ".join(words[i+1:]).strip(" ,.:!?")
                     return True, rest
-                for core in _WAKE_CORES:
-                    if core in p:
-                        rest = " ".join(words[i+1:]).strip(" ,.:!?")
-                        return True, rest
+                if not strict:
+                    for core in _WAKE_CORES:
+                        if core in p:
+                            rest = " ".join(words[i+1:]).strip(" ,.:!?")
+                            return True, rest
     return False, t
+
+_wake_armed_until = [0.0]  # fenetre « j'ecoute » apres un wake prononce SEUL
+WAKE_ARMED_WINDOW = 6.0
 
 def send_voice(text):
     """Envoie le texte transcrit dans cmd.txt si contient 'Claudius'."""
     if is_hallucination(text):
         return
-    # Filtre mot-cle : la phrase doit contenir "Claudius" quelque part
-    has_wake, clean_text = _contains_wake_word(text)
+    # Filtre mot-cle : la phrase doit contenir "Claudius" quelque part.
+    # Si du son sort des enceintes (video, musique) : mot EXACT requis.
+    strict = _system_audio_loud
+    has_wake, clean_text = _contains_wake_word(text, strict=strict)
     if not has_wake:
-        _log(f"Pas de mot-cle: {repr(text[:60])}")
-        return
-    if not clean_text:
-        # Juste le mot-cle (ex: "Bonjour Claudius") — envoyer "bonjour" comme contenu
+        # « Le Glaude... [pause] ...quelle heure il est » : le decoupage par
+        # silence separe le wake de la commande -> fenetre armee 6 s
+        if time.time() < _wake_armed_until[0]:
+            _wake_armed_until[0] = 0.0
+            clean_text = text.strip(" ,.:!?")
+            _log(f"Fenetre wake armee — accepte sans mot-cle: {repr(clean_text[:60])}")
+        else:
+            _log(f"Pas de mot-cle{' (strict, audio en sortie)' if strict else ''}: {repr(text[:60])}")
+            return
+    if has_wake and not clean_text:
+        # Wake sans rien APRES : recuperer ce qu'il y avait AVANT ("Bonjour Claudius")
         t = text.strip()
         words = t.split()
         for i, w in enumerate(words):
-            wl = w.lower().strip(".,!?;:'\"")
+            wl = w.lower().strip(".,!?;:'\"").replace("-", "").replace(".", "")
             if wl in _WAKE_EXACT or any(c in wl for c in _WAKE_CORES):
                 before = " ".join(words[:i]).strip(" ,.:!?")
                 if before:
                     clean_text = before
-                    break
-                else:
-                    clean_text = "bonjour"
-                    break
-        else:
-            clean_text = "bonjour"
+                break
+        if not clean_text:
+            # Wake prononce SEUL : bip d'acquittement + on ecoute la suite 6 s
+            if os.path.exists(SLEEP_FILE) or os.path.exists(TTS_LOCK_FILE):
+                return
+            _wake_armed_until[0] = time.time() + WAKE_ARMED_WINDOW
+            with _send_lock:
+                if not os.path.exists(CMD_FILE):
+                    try:
+                        with open(CMD_FILE, "w", encoding="utf-8") as f:
+                            f.write("ack")
+                    except Exception:
+                        pass
+            _log("Wake seul — bip + fenetre de 6 s sans mot-cle")
+            return
     text = clean_text
     if os.path.exists(SLEEP_FILE):
-        _log("Veille — ignore"); return
+        # Seul le reveil passe (« Claudius reveille-toi ») — le Bridge gere
+        if not re.search(r'r[eé]veil|debout', text, re.IGNORECASE):
+            _log("Veille — ignore"); return
     if os.path.exists(TTS_LOCK_FILE):
         _log("TTS actif — ignore"); return
     with _send_lock:
@@ -345,14 +435,16 @@ def _transcription_worker(model):
             _log(f"ERR transcribe: {e}")
 
 def calibrate(stream, duration=2.0):
-    # Attendre que l'audio systeme soit inactif avant de calibrer
-    if _system_audio_active:
+    # Attendre le VRAI silence avant de calibrer : sessions actives ET son en
+    # sortie (peak) — avant, une video dans le navigateur (process ignore)
+    # faisait calibrer en plein bruit (seuil 2780 vu en reel 2026-06-12)
+    if _system_audio_active or _system_audio_loud:
         _log("Calibration: audio systeme actif, attente...")
         for _ in range(60):  # max 30s d'attente
             time.sleep(0.5)
-            if not _system_audio_active:
+            if not _system_audio_active and not _system_audio_loud:
                 break
-        if _system_audio_active:
+        if _system_audio_active or _system_audio_loud:
             _log("Calibration: audio toujours actif, calibration forcee")
         else:
             _log("Calibration: audio inactif, go")
@@ -410,8 +502,10 @@ def listen_loop(model, threshold, stream):
 
         if level > threshold:
             if not recording:
-                # Anti-flood cooldown
-                if time.time() - last_send_time < COOLDOWN:
+                # Anti-flood cooldown (raccourci si fenetre wake armee : la
+                # commande arrive juste apres le bip, ne pas la manger)
+                cd = 0.5 if time.time() < _wake_armed_until[0] else COOLDOWN
+                if time.time() - last_send_time < cd:
                     continue
                 recording = True; frames = []; t_speech = 0.0; t_silence = 0.0
             frames.append(chunk.copy())

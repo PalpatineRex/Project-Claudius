@@ -74,8 +74,11 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
 .btn-icon{padding:6px 9px;font-size:12px;font-family:inherit;}
 .btn-rst:hover{background:var(--red);border-color:var(--red);color:#fff;}
 
-/* ===== Overlay OPTIONS ===== */
-#settings-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(3px);z-index:100;justify-content:center;align-items:center;}
+/* ===== Overlays OPTIONS / COMMANDES ===== */
+#settings-overlay,#cmds-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(3px);z-index:100;justify-content:center;align-items:center;}
+.cmd{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:4px 0;font-size:12px;}
+.cmd .say{color:var(--fg);}
+.cmd .fx{color:var(--dim);font-size:10px;text-align:right;flex-shrink:0;}
 .sheet{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px 28px;width:600px;max-width:94vw;max-height:88vh;overflow-y:auto;}
 .sheet h3{font-family:Orbitron;font-size:12px;letter-spacing:1px;color:var(--red);margin:14px 0 8px;}
 .sheet h3:first-child{margin-top:0;}
@@ -136,9 +139,69 @@ input[type=text]:focus,input[type=password]:focus{border-color:var(--red);box-sh
   <button class="btn btn-icon" onclick="quickCmd('non')" title="non">&#x274C;</button>
   <button class="btn btn-icon" onclick="quickCmd('snap')" title="snap">&#x1F4F7;</button>
   <button class="btn btn-rst" onclick="restartBridge()">RESTART</button>
+  <button class="btn" onclick="toggleCmds()" title="catalogue des commandes vocales">&#x1F3A4; CMDS</button>
   <button class="btn" onclick="toggleSettings()">&#x2699; OPTIONS</button>
 </div>
 </div>
+
+<div id="cmds-overlay"><div class="sheet">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+  <span style="font-family:Orbitron;font-size:13px;color:var(--red);letter-spacing:1px">&#x1F3A4; COMMANDES VOCALES</span>
+  <button class="win-btn" onclick="toggleCmds()">&#x2715;</button></div>
+<div class="tip">Mots-cl&eacute;s wake : <b id="cmds-wake" style="color:var(--fg)">claudius</b></div>
+<h3>&#x1F4DE; COMMENT L'APPELER (3 fa&ccedil;ons)</h3>
+<div class="cmd"><span class="say">&laquo; Le Glaude, quelle heure il est &raquo;</span><span class="fx">d'une traite</span></div>
+<div class="cmd"><span class="say">&laquo; Le Glaude &raquo; &rarr; <i>bip</i> &rarr; &laquo; quelle heure il est &raquo;</span><span class="fx">6 s pour parler, sans re-dire le nom</span></div>
+<div class="cmd"><span class="say">&laquo; Quelle heure il est, le Glaude ? &raquo;</span><span class="fx">nom &agrave; la fin</span></div>
+<div class="tip">&#x1F3B5; Pendant une musique/vid&eacute;o : prononcer un nom EXACT (les &agrave;-peu-pr&egrave;s sont ignor&eacute;s pour ne pas r&eacute;pondre aux vid&eacute;os). En veille, seul &laquo; r&eacute;veille-toi &raquo; passe.<br>
+Les commandes ci-dessous r&eacute;pondent INSTANTAN&Eacute;MENT (d&eacute;tection locale, z&eacute;ro LLM). Tout le reste = conversation libre via LLM.</div>
+
+<h3>&#x23F0; HEURE &amp; DATE</h3>
+<div class="cmd"><span class="say">&laquo; quelle heure il est &raquo;</span><span class="fx">heure</span></div>
+<div class="cmd"><span class="say">&laquo; on est quel jour &raquo;</span><span class="fx">date</span></div>
+
+<h3>&#x1F326; M&Eacute;T&Eacute;O (Lavelanet)</h3>
+<div class="cmd"><span class="say">&laquo; quel temps il fait &raquo; &middot; &laquo; il fait combien dehors &raquo;</span><span class="fx">m&eacute;t&eacute;o live</span></div>
+
+<h3>&#x23F2; MINUTEURS &amp; RAPPELS</h3>
+<div class="cmd"><span class="say">&laquo; mets un timer de 10 minutes &raquo;</span><span class="fx">minuteur simple</span></div>
+<div class="cmd"><span class="say">&laquo; minuteur p&acirc;tes 8 minutes &raquo;</span><span class="fx">minuteur NOMM&Eacute; (plusieurs en parall&egrave;le)</span></div>
+<div class="cmd"><span class="say">&laquo; combien de temps reste &raquo; &middot; &laquo; timers en cours &raquo;</span><span class="fx">statut</span></div>
+<div class="cmd"><span class="say">&laquo; annule le minuteur p&acirc;tes &raquo; &middot; &laquo; annule les timers &raquo;</span><span class="fx">annulation cibl&eacute;e ou totale</span></div>
+<div class="cmd"><span class="say">&laquo; rappelle-moi de sortir les poubelles dans 20 minutes &raquo;</span><span class="fx">rappel parl&eacute;</span></div>
+
+<h3>&#x1F50A; VOLUME DE LA VOIX</h3>
+<div class="cmd"><span class="say">&laquo; parle moins fort &raquo; &middot; &laquo; parle plus fort &raquo; &middot; &laquo; parle doucement &raquo;</span><span class="fx">paliers</span></div>
+<div class="cmd"><span class="say">&laquo; volume &agrave; 50 pour cent &raquo; &middot; &laquo; volume normal / maximum / minimum &raquo;</span><span class="fx">persistant</span></div>
+
+<h3>&#x1F501; R&Eacute;P&Egrave;TE</h3>
+<div class="cmd"><span class="say">&laquo; r&eacute;p&egrave;te &raquo; &middot; &laquo; qu'est-ce que tu as dit &raquo; &middot; &laquo; j'ai pas compris &raquo;</span><span class="fx">redit la derni&egrave;re phrase</span></div>
+
+<h3>&#x26A1; &Eacute;TAT SYST&Egrave;ME</h3>
+<div class="cmd"><span class="say">&laquo; comment tu te sens &raquo; &middot; &laquo; &eacute;tat syst&egrave;me &raquo;</span><span class="fx">CPU / RAM / VRAM / uptime parl&eacute;s</span></div>
+
+<h3>&#x1F3B5; MUSIQUE (lecteur actif Windows)</h3>
+<div class="cmd"><span class="say">&laquo; pause la musique &raquo; &middot; &laquo; remets la musique &raquo;</span><span class="fx">pause / reprise</span></div>
+<div class="cmd"><span class="say">&laquo; piste suivante &raquo; &middot; &laquo; piste pr&eacute;c&eacute;dente &raquo; &middot; &laquo; change de musique &raquo;</span><span class="fx">navigation</span></div>
+
+<h3>&#x1F9EE; CALCULS &amp; CONVERSIONS</h3>
+<div class="cmd"><span class="say">&laquo; combien font 17 fois 23 &raquo; &middot; &laquo; 20 pour cent de 150 &raquo;</span><span class="fx">+ &minus; &times; &divide; %</span></div>
+<div class="cmd"><span class="say">&laquo; 5 miles en kilom&egrave;tres &raquo; &middot; &laquo; 100 fahrenheit en celsius &raquo;</span><span class="fx">aussi : pouces/cm, pieds/m, kilos/livres</span></div>
+
+<h3>&#x1F634; VEILLE</h3>
+<div class="cmd"><span class="say">&laquo; bonne nuit &raquo; &middot; &laquo; tais-toi &raquo; &middot; &laquo; mode silence &raquo;</span><span class="fx">passe en veille</span></div>
+<div class="cmd"><span class="say">&laquo; Claudius r&eacute;veille-toi &raquo; &middot; &laquo; debout &raquo;</span><span class="fx">seule phrase &eacute;cout&eacute;e en veille</span></div>
+
+<h3>&#x1F441; VISION &amp; CERVEAU (via LLM)</h3>
+<div class="cmd"><span class="say">&laquo; regarde &raquo; &middot; &laquo; qu'est-ce que tu vois &raquo;</span><span class="fx">snap cam&eacute;ra + analyse</span></div>
+<div class="cmd"><span class="say">&laquo; o&ugrave; j'en suis sur Eldritch / Odysseus / Aether&hellip; &raquo;</span><span class="fx">fiches du Cerveau inject&eacute;es</span></div>
+
+<h3>&#x2328; SAISIE TEXTE (la barre en bas du dash)</h3>
+<div class="tip">M&ecirc;mes commandes qu'&agrave; la voix, SANS mot-cl&eacute; wake (tape directement &laquo; quelle heure il est &raquo;).</div>
+<div class="cmd"><span class="say">&#x1F4AC; Parler</span><span class="fx">comme une phrase dite au micro (commandes + LLM)</span></div>
+<div class="cmd"><span class="say">&#x1F4E2; Faire dire</span><span class="fx">Claudius lit le texte tel quel (TTS sans LLM)</span></div>
+<div class="cmd"><span class="say">&#x2699; Commande</span><span class="fx">brute : hello &middot; think &middot; oui &middot; non &middot; blink &middot; reset &middot; snap &middot; sleep &middot; wake</span></div>
+</div></div>
 
 <div id="settings-overlay"><div class="sheet">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -338,6 +401,9 @@ try{const r=await fetch('/api/restart',{method:'POST'});const d=await r.json();a
 window.clearLogs=async function(){try{await fetch('/api/logs/clear',{method:'POST'});lHash='';$('logs').innerHTML='';}catch(e){}};
 $('cmd-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendCmd();});
 window.toggleSettings=function(){const o=$('settings-overlay');o.style.display=o.style.display==='flex'?'none':'flex';};
+window.toggleCmds=function(){const o=$('cmds-overlay');const show=o.style.display!=='flex';
+if(show){const w=$('set-wake').value||'claudius';$('cmds-wake').textContent=w.split(',').map(s=>'« '+s.trim()+' »').join('  ');}
+o.style.display=show?'flex':'none';};
 
 /* ===== Settings ===== */
 const SLIDERS=[['set-vol','set-vol-val',v=>v+'%'],['set-mic','set-mic-val',v=>v],['set-tts','set-tts-val',v=>(v/100).toFixed(1)+'x'],

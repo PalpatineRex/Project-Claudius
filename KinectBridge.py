@@ -16,7 +16,7 @@ import numpy as np
 import sounddevice as sd
 
 from claudius_sfx import preload_all as sfx_preload, play as sfx_play
-from claudius_utils import log, reaccentuate, check_utility
+from claudius_utils import log, reaccentuate, check_utility, format_duration
 from claudius_utils import start_timer as util_start_timer
 from claudius_blend import synth_both
 
@@ -143,6 +143,38 @@ _motor_daemon_proc = None
 _conversation_history = []
 _history_lock = threading.Lock()
 MAX_HISTORY = 6
+_boot_time = time.time()
+_last_spoken = [None]  # dernière phrase prononcée (pour « répète »)
+_settings_write_lock = threading.Lock()
+
+# ====================================================================
+# VOLUME TTS (commande vocale « parle moins fort » / dashboard plus tard)
+# ====================================================================
+def _get_tts_volume():
+    try:
+        return max(0.2, min(2.0, float(_load_settings().get("tts_volume", 1.0))))
+    except Exception:
+        return 1.0
+
+def _set_tts_volume(gain):
+    """Persiste tts_volume dans claudius_settings.json (read-modify-write
+    atomique). Le POST du dashboard merge lui aussi -> pas d'ecrasement."""
+    path = os.path.join(_DATA_DIR, "claudius_settings.json")
+    with _settings_write_lock:
+        try:
+            try:
+                with open(path, "r") as f:
+                    s = json.load(f)
+            except Exception:
+                s = {}
+            s["tts_volume"] = round(float(gain), 2)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(s, f, indent=2)
+            os.replace(tmp, path)
+            log(f"tts_volume = {s['tts_volume']}", LOG_FILE, "UTIL")
+        except Exception as e:
+            log(f"ERR set volume: {e}", LOG_FILE, "UTIL")
 
 # ====================================================================
 # TTS — PIPER + BLEND
@@ -176,6 +208,7 @@ def _load_piper_bg():
             sfx_play("boot")
 
 def _tts_wait(text):
+    _last_spoken[0] = text  # pour « répète » (avant accentuation : re-passage idempotent)
     text = reaccentuate(text)
     _speaking.set()
     try:
@@ -212,7 +245,8 @@ def _tts_wait(text):
                     log(f"ERR tts synth: {e}", LOG_FILE, "TTS")
             if audio_data is not None:
                 try:
-                    sd.play(audio_data / 32768.0, samplerate=sample_rate)
+                    vol = _get_tts_volume()
+                    sd.play(np.clip(audio_data * vol / 32768.0, -1.0, 1.0), samplerate=sample_rate)
                     sd.wait()
                 except Exception as e:
                     log(f"ERR tts play: {e}", LOG_FILE, "TTS")
@@ -236,7 +270,9 @@ def _on_timer_alarm(message):
     _priority_evt.set()
     try:
         sfx_play("alarm", blocking=True)
-        if message:
+        if message and message.startswith("minuteur"):
+            _tts_wait(f"David ! Le {message} est termine !")
+        elif message:
             _tts_wait(f"David ! Rappel : {message}")
         else:
             _tts_wait("David ! Le timer est termine !")
@@ -824,7 +860,8 @@ def _voice_streamed(text):
             if audio is None:
                 break
             try:
-                sd.play(audio / 32768.0, samplerate=sample_rate)
+                vol = _get_tts_volume()
+                sd.play(np.clip(audio * vol / 32768.0, -1.0, 1.0), samplerate=sample_rate)
                 sd.wait()
                 played = True
             except Exception as e:
@@ -838,6 +875,8 @@ def _voice_streamed(text):
             pass
     if reply_box[0] is None and not played:
         return None
+    if reply_box[0]:
+        _last_spoken[0] = reply_box[0]  # pour « répète »
     return reply_box[0] or ""
 
 
@@ -878,7 +917,7 @@ def _handle_voice(text):
         sfx_play("listen")  # non bloquant : joue PENDANT le traitement (-0.25 s)
 
     # 1. Commandes utilitaires (locales, zéro latence API)
-    util_reply = check_utility(text, on_alarm_callback=_on_timer_alarm)
+    util_reply = check_utility(text, on_alarm_callback=_on_timer_alarm, bridge=_BRIDGE_HOOKS)
     if util_reply:
         log(f"Util reply: {util_reply[:80]}", LOG_FILE)
         _write_transcript("Claudius", util_reply)
@@ -973,6 +1012,54 @@ def _do_wake():
     log("Reveil", LOG_FILE)
 
 # ====================================================================
+# ÉTAT SYSTÈME PARLÉ (« comment tu te sens ») + HOOKS pour check_utility
+# ====================================================================
+def _num_fr(v):
+    """Nombre parlé FR : entier si presque rond, sinon « X virgule Y »."""
+    if abs(v - round(v)) < 0.05:
+        return str(int(round(v)))
+    return f"{v:.1f}".replace(".", " virgule ")
+
+def _sysload_speech():
+    """Conso des process Claudius via l'API du dashboard (la mesure existe
+    deja la-bas) ; fallback psutil machine si le dash ne repond pas."""
+    parts = []
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:5005/api/sysload", timeout=4) as r:
+            d = json.loads(r.read().decode())
+        if d.get("ok"):
+            cpu, ram, vram = d.get("cpu", 0), d.get("ram_mb", 0), d.get("vram_mb", -1)
+            cpu_txt = "presque rien du processeur" if cpu < 1 else f"{_num_fr(cpu)} pour cent du processeur"
+            ram_txt = f"{_num_fr(ram / 1024)} gigas de memoire" if ram >= 1024 else f"{ram} megas de memoire"
+            s = f"Je me sens bien ! J'utilise {cpu_txt} et {ram_txt}"
+            if vram and vram > 0:
+                vram_txt = f"{_num_fr(vram / 1024)} gigas" if vram >= 1024 else f"{vram} megas"
+                s += f", plus {vram_txt} de memoire graphique"
+            parts.append(s + ".")
+    except Exception as e:
+        log(f"ERR sysload: {e}", LOG_FILE, "UTIL")
+    if not parts:
+        try:
+            import psutil
+            cpu = psutil.cpu_percent(interval=0.4)
+            mem = psutil.virtual_memory().percent
+            parts.append(f"Le tableau de bord ne repond pas, mais la machine est a "
+                         f"{_num_fr(cpu)} pour cent de processeur et {_num_fr(mem)} pour cent de memoire.")
+        except Exception:
+            parts.append("Je n'arrive pas a mesurer ma charge, desole.")
+    parts.append(f"Je suis debout depuis {format_duration(int(time.time() - _boot_time))}.")
+    return " ".join(parts)
+
+# Leviers passés à check_utility (claudius_utils) : volume, répète, sysload, veille
+_BRIDGE_HOOKS = {
+    "last_reply": lambda: _last_spoken[0],
+    "get_volume": _get_tts_volume,
+    "set_volume": _set_tts_volume,
+    "sysload": _sysload_speech,
+    "sleep": _do_sleep,
+}
+
+# ====================================================================
 # WATCHER cmd.txt
 # ====================================================================
 VALID_CMDS = {"oui", "non", "blink", "hello", "think", "reset", "snap", "sleep", "wake"}
@@ -999,10 +1086,20 @@ def watch_cmd():
 
                 cmd = raw.lower()
                 if cmd.startswith("voice:"):
+                    text = raw[6:].strip()
                     if _sleeping.is_set():
-                        log("VOICE ignore (veille)", LOG_FILE)
+                        # Seul le réveil passe pendant la veille
+                        if text and re.search(r'r[eé]veil|debout', text, re.IGNORECASE):
+                            _priority_evt.set()
+                            try:
+                                _do_wake()
+                                _write_transcript("Claudius", "Me revoila ! Tu disais ?")
+                                _tts_wait("Me revoila ! Tu disais ?")
+                            finally:
+                                _priority_evt.clear()
+                        else:
+                            log("VOICE ignore (veille)", LOG_FILE)
                     else:
-                        text = raw[6:].strip()
                         if text:
                             _priority_evt.set()
                             try:
@@ -1019,6 +1116,10 @@ def watch_cmd():
                             _tts_wait(text)
                         finally:
                             _priority_evt.clear()
+                elif cmd == "ack":
+                    # Wake prononce seul (Voice) : bip « j'ecoute », pas de TTS
+                    if not _sleeping.is_set():
+                        sfx_play("listen")
                 elif cmd in VALID_CMDS:
                     _priority_evt.set()
                     try:

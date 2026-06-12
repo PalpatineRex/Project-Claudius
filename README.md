@@ -39,7 +39,8 @@ Double-click **`ClaudiusDashboard.exe`** — a native **frameless** window opens
 | 😃 **Gestures** | Yes, no, hello, thinking — the Kinect head moves, and the dashboard tells the TRUTH about motor health |
 | 👀 **Presence** | Claudius knows if you're there, and how far away |
 | 📷 **Vision** | "Look at my desk" → Claudius takes a photo and describes it |
-| ⏰ **Utilities** | Time, date, weather, timer, reminders — zero API latency |
+| 📣 **Smart wake** | Multi-tag wake words (even made-up or multi-word: « Le Glaude ») taught to Whisper automatically. Name alone → *beep* → 6 s to speak without repeating it. While music/video plays: EXACT name required — videos can't wake him anymore |
+| ⏰ **Local commands** | Time, date, weather, **named timers** (« pasta timer 8 minutes »), reminders, **voice volume control**, « repeat », **spoken system load**, **music control** (pause/next track), **math & unit conversions**, voice sleep/wake — zero API latency. Full catalog: 🎤 CMDS button in the dashboard |
 | 🖥️ **Dashboard** | Frameless real-time UI: conversation, logs, **live mic meter**, **system impact monitor** (CPU/RAM/VRAM), honest status pills |
 | 🎨 **Themes** | 16 presets (incl. `ambulance 🚑`) + **named custom themes** (color pickers, save/export/import JSON) + animated background FX |
 | 🌍 **10 languages** | Dashboard UI in FR, EN, ES, DE, IT, PT, RU, JA, ZH, KO |

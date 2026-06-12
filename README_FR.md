@@ -39,7 +39,8 @@ Double-cliquez **`ClaudiusDashboard.exe`** — une fenêtre native **sans barre 
 | 😃 **Gestes** | Oui, non, hello, réflexion — la tête bouge, et le dashboard dit la VÉRITÉ sur la santé du moteur |
 | 👀 **Présence** | Claudius sait si vous êtes là, et à quelle distance |
 | 📷 **Vision** | « Regarde mon bureau » → il prend une photo et la décrit |
-| ⏰ **Utilitaires** | Heure, date, météo, timer, rappels — zéro latence API |
+| 📣 **Wake intelligent** | Multi-tags (même inventés ou multi-mots : « Le Glaude ») appris automatiquement à Whisper. Nom seul → *bip* → 6 s pour parler sans le redire. Pendant une musique/vidéo : nom EXACT requis — les vidéos ne le réveillent plus |
+| ⏰ **Commandes locales** | Heure, date, météo, **minuteurs nommés** (« minuteur pâtes 8 minutes »), rappels, **volume à la voix**, « répète », **état système parlé**, **musique** (pause/piste suivante), **calculs & conversions**, veille/réveil vocal — zéro latence API. Catalogue : bouton 🎤 CMDS du dashboard |
 | 🖥️ **Dashboard** | UI temps réel sans bordure : conversation, logs, **vu-mètre micro live**, **moniteur d'impact système** (CPU/RAM/VRAM), pills de statut honnêtes |
 | 🎨 **Thèmes** | 16 présets (dont `ambulance 🚑`) + **thèmes custom nommés** (pastilles de couleurs, save/export/import JSON) + effets de fond animés |
 | 🌍 **10 langues** | UI du dashboard en FR, EN, ES, DE, IT, PT, RU, JA, ZH, KO |
