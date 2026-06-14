@@ -111,7 +111,9 @@ def _cleanup_boot():
                 os.remove(f)
         except Exception:
             pass
-    os.system("taskkill /f /im KinectMotor.exe >nul 2>nul")
+    subprocess.run(["taskkill", "/f", "/im", "KinectMotor.exe"],
+                   creationflags=subprocess.CREATE_NO_WINDOW,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1)
 
 def _rotate_log():
@@ -358,7 +360,9 @@ def _launch_motor_daemon():
     if not os.path.exists(MOTOR_EXE):
         log("MOTOR: exe introuvable — mode legacy", LOG_FILE)
         return False
-    os.system("taskkill /f /im KinectMotor.exe >nul 2>nul")
+    subprocess.run(["taskkill", "/f", "/im", "KinectMotor.exe"],
+                   creationflags=subprocess.CREATE_NO_WINDOW,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1)
     try:
         proc = subprocess.Popen(
