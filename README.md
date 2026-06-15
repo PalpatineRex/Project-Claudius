@@ -6,6 +6,8 @@
 
 Claudius is a physical voice assistant built from an **Xbox 360 Kinect v1**. It understands your questions, answers out loud, and nods like a real buddy. It senses your presence, adapts to your mood, and can even look at your desk.
 
+![Claudius — operator dashboard](docs/screenshot.png)
+
 ---
 
 ## 🚀 How to start Claudius
